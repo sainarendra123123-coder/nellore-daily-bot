@@ -73,7 +73,7 @@ def generate_script_with_gemini(articles):
     "selected_link", "headline_te", "voiceover_te", "caption", "bgm_mood"
     """
     response = client.models.generate_content(
-        model="gemini-2.5-flash",
+        model="gemini-3.8-flash",
         contents=prompt,
         config=types.GenerateContentConfig(
             response_mime_type="application/json",
