@@ -1,5 +1,6 @@
-google-genai
 feedparser
-edge-tts
 requests
-Pillow
+edge-tts
+pillow
+google-genai
+beautifulsoup4
