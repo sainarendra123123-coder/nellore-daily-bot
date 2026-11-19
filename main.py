@@ -119,7 +119,7 @@ def fetch_latest_news(history):
     seen_links = set(history)
     # Rotate category order every 30-min run so your page gets variety (Nellore -> Jobs -> Cricket -> Tollywood -> Trending)
     categories = list(CATEGORY_FEEDS.keys())
-    slot = int(time.time() // 1800) % len(categories)
+    slot = int(time.time() // 3600) % len(categories)
     ordered_cats = categories[slot:] + categories[:slot]
 
     for category in ordered_cats:
