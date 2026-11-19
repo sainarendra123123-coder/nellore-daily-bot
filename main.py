@@ -3,6 +3,7 @@ import re
 import io
 import json
 import time
+import urllib.parse
 import asyncio
 import random
 import subprocess
@@ -11,7 +12,7 @@ import feedparser
 import requests
 import edge_tts
 from bs4 import BeautifulSoup
-from PIL import Image, ImageDraw, ImageFont, ImageEnhance, ImageFilter
+from PIL import Image, ImageDraw, ImageFont, ImageEnhance
 from google import genai
 from google.genai import types
 
@@ -25,27 +26,28 @@ PREVIEW_ONLY = os.environ.get("PREVIEW_ONLY", "false").lower() == "true"
 IST = timezone(timedelta(hours=5, minutes=30))
 HISTORY_FILE = "posted_history.json"
 
+# Direct publisher RSS feeds (real og:image photos + latest today news, zero politics)
 CATEGORY_FEEDS = {
     "NELLORE CITY": [
-        "https://news.google.com/rss/search?q=Nellore+city+OR+%E0%B0%A8%E0%B1%86%E0%B0%B2%E0%B1%8D%E0%B0%B2%E0%B1%82%E0%B0%B0%E0%B1%81+when:1d&hl=te&gl=IN&ceid=IN:te",
-        "https://news.google.com/rss/search?q=Nellore+offers+OR+events+OR+weather+when:1d&hl=en-IN&gl=IN&ceid=IN:en"
+        "https://www.eenadu.net/rss/andhra-pradesh.xml",
+        "https://www.sakshi.com/rss/andhra-pradesh",
+        "https://news.google.com/rss/search?q=Nellore+city+OR+%E0%B0%A8%E0%B1%86%E0%B0%B2%E0%B1%8D%E0%B0%B2%E0%B1%82%E0%B0%B0%E0%B1%81+when:1d&hl=te&gl=IN&ceid=IN:te"
     ],
     "JOBS ALERT": [
-        "https://news.google.com/rss/search?q=APPSC+OR+Andhra+Pradesh+jobs+notification+when:1d&hl=te&gl=IN&ceid=IN:te",
-        "https://news.google.com/rss/search?q=Nellore+jobs+OR+AP+govt+jobs+notification+when:1d&hl=en-IN&gl=IN&ceid=IN:en"
+        "https://news.google.com/rss/search?q=APPSC+OR+DSC+OR+Andhra+Pradesh+jobs+notification+when:1d&hl=te&gl=IN&ceid=IN:te",
+        "https://news.google.com/rss/search?q=Andhra+Pradesh+govt+jobs+notification+when:1d&hl=en-IN&gl=IN&ceid=IN:en"
     ],
     "CRICKET": [
-        "https://news.google.com/rss/search?q=India+cricket+OR+IPL+Telugu+when:1d&hl=te&gl=IN&ceid=IN:te",
-        "https://www.espncricinfo.com/rss/content/story/feeds/0.xml"
+        "https://www.espncricinfo.com/rss/content/story/feeds/0.xml",
+        "https://news.google.com/rss/search?q=India+cricket+OR+IPL+Telugu+when:1d&hl=te&gl=IN&ceid=IN:te"
     ],
     "TOLLYWOOD": [
-        "https://news.google.com/rss/search?q=Tollywood+movie+release+OR+trailer+when:1d&hl=te&gl=IN&ceid=IN:te",
-        "https://telugu.samayam.com/entertainment/rssfeeds/48332856.cms"
+        "https://telugu.samayam.com/entertainment/rssfeeds/48332856.cms",
+        "https://news.google.com/rss/search?q=Tollywood+movie+release+OR+trailer+when:1d&hl=te&gl=IN&ceid=IN:te"
     ],
     "TRENDING": [
         "https://news.google.com/rss/search?q=Gold+rate+today+Andhra+Pradesh+when:1d&hl=te&gl=IN&ceid=IN:te",
-        "https://www.eenadu.net/rss/andhra-pradesh.xml",
-        "https://www.sakshi.com/rss/andhra-pradesh"
+        "https://www.eenadu.net/rss/andhra-pradesh.xml"
     ]
 }
 
@@ -95,18 +97,18 @@ def is_recent_entry(entry, max_age_hours=18):
     except Exception:
         return True
 
-def resolve_article_image(url):
-    if not url:
-        return ""
-    try:
-        resp = requests.get(url, timeout=10, allow_redirects=True, headers={"User-Agent": "Mozilla/5.0"})
-        soup = BeautifulSoup(resp.text, "html.parser")
-        for prop in ["og:image", "twitter:image"]:
-            tag = soup.find("meta", property=prop) or soup.find("meta", attrs={"name": prop})
-            if tag and tag.get("content") and tag["content"].startswith("http"):
-                return tag["content"]
-    except Exception:
-        pass
+def extract_rss_media(entry):
+    for key in ("media_content", "media_thumbnail"):
+        media = entry.get(key)
+        if isinstance(media, list) and media and media[0].get("url"):
+            return media[0]["url"]
+    for link in entry.get("links", []):
+        if "image" in link.get("type", "") and link.get("href"):
+            return link["href"]
+    raw_desc = entry.get("summary", "") or entry.get("description", "")
+    m = re.search(r'<img[^>]+src=["\']([^"\']+)["\']', raw_desc, re.I)
+    if m and m.group(1).startswith("http"):
+        return m.group(1)
     return ""
 
 def fetch_latest_news(history):
@@ -137,7 +139,8 @@ def fetch_latest_news(history):
                         "title": title,
                         "summary": summary[:350],
                         "published": entry.get("published", ""),
-                        "link": link
+                        "link": link,
+                        "rss_image": extract_rss_media(entry)
                     })
             except Exception as e:
                 print(f"Feed warning ({category}): {e}")
@@ -149,30 +152,29 @@ def generate_storyboard_with_gemini(articles):
     preferred_cat = articles[0]["category"] if articles else "NELLORE CITY"
 
     prompt = f"""
-    You are a top Telugu Reel director & storyteller for 'Nellore Daily'.
-    Current date & time: {now_ist}.
+    You are the lead Telugu visual storyteller for 'Nellore Daily'.
+    Current exact date & time: {now_ist}.
 
     Review these fresh news items from today:
     {json.dumps(articles, ensure_ascii=False)}
 
     STRICT RULES:
-    1. ZERO POLITICS: Reject any political parties, leaders, or election stories.
-    2. TOPIC: Prefer '{preferred_cat}' if strong; otherwise pick the best fresh story on Nellore city updates/offers, AP/Nellore Jobs, Cricket, Tollywood, or Gold/Silver & trending updates.
-    3. NATURAL CONTINUOUS TELUGU NARRATION (NO ROBOTIC CHOPPY WORDS):
-       - Write one cohesive, natural 45-to-55 word spoken Telugu narration split into 4 smooth scenes.
-       - Use everyday spoken Telugu (like a friendly Nellore anchor talking naturally), avoiding complex tongue-twister conjuncts or stiff bookish words.
-       - Keep each scene's "subtitle_te" SHORT (4 to 6 simple Telugu words max) so it never overflows the screen.
-    4. REALISTIC VISUAL SEARCH QUERIES FOR EACH SCENE:
-       - Provide 4 specific English search terms ("wikimedia_query") that match real photography on Wikimedia Commons / web (e.g., "cricket stadium India", "Indian students classroom", "gold jewellery India", "Nellore Penna river", "Telugu cinema theatre", "Indian smartphone shopping").
-       - Also provide a detailed photorealistic "ai_prompt" for each scene (vertical 9:16 photo, realistic Indian context, dramatic lighting, zero text).
+    1. ZERO POLITICS: Never pick political parties, leaders, speeches, or elections.
+    2. TOPIC: Prefer '{preferred_cat}' if a strong fresh story is available; otherwise pick the best fresh story on Nellore city updates/offers, AP/Nellore Jobs, Cricket, Tollywood, or Gold/Silver & trending facts.
+    3. NATURAL SPOKEN TELUGU:
+       - Write one smooth, conversational 45-to-55 word Telugu voiceover split into 4 scenes.
+       - Use everyday spoken Telugu (friendly Nellore tone, simple clear words, no stiff dubbing Telugu).
+       - Keep each scene's "subtitle_te" SHORT (4 to 6 Telugu words max) so it looks clean and readable.
+    4. REAL PHOTO SEARCH KEYWORDS FOR EACH SCENE:
+       - For each of the 4 scenes, give a clean 2-3 word English image search query ("image_query") that reliably returns high-res real photos on the web (e.g., "Indian cricket stadium match", "Virat Kohli batting", "Indian students classroom exam", "gold jewelry necklace", "Nellore city India", "Telugu movie cinema theater").
     5. METADATA:
        - "category_badge": One of "NELLORE CITY", "JOBS ALERT", "CRICKET", "TOLLYWOOD", "TRENDING".
-       - "headline_te": Short 5-word Telugu banner headline.
+       - "headline_te": Short 5-word Telugu headline.
        - "caption": Engaging Instagram & Facebook caption in Telugu + English with source credit and hashtags.
        - "bgm_mood": One of "breaking", "emotional", "devotional", "general".
 
     Return strictly valid JSON with keys:
-    "selected_link", "category_badge", "headline_te", "scenes" (array of 4 objects with "narration_te", "subtitle_te", "wikimedia_query", "ai_prompt"), "caption", "bgm_mood"
+    "selected_link", "category_badge", "headline_te", "scenes" (array of 4 objects with "narration_te", "subtitle_te", "image_query"), "caption", "bgm_mood"
     """
 
     last_err = None
@@ -192,105 +194,91 @@ def generate_storyboard_with_gemini(articles):
                     return data
             except Exception as e:
                 last_err = e
-                time.sleep(10 * (attempt + 1))
+                time.sleep(8 * (attempt + 1))
 
     raise RuntimeError(f"All Gemini models failed: {last_err}")
 
-def search_wikimedia_images(query, limit=6):
-    # Free, unlimited, zero-API-key high-resolution real photography from Wikimedia Commons
+def search_web_images(query, max_results=8):
+    # Reliable multi-source real image search (Bing Image Search HTML + Wikimedia Commons)
     urls = []
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
+    }
     try:
-        r = requests.get(
-            "https://commons.wikimedia.org/w/api.php",
-            params={
-                "action": "query",
-                "generator": "search",
-                "gsrsearch": f"filetype:bitmap {query}",
-                "gsrnamespace": "6",
-                "gsrlimit": str(limit),
-                "prop": "imageinfo",
-                "iiprop": "url|size",
-                "iiurlwidth": "1280",
-                "format": "json"
-            },
-            headers={"User-Agent": "NelloreDailyBot/1.0 (contact@nelloredaily.local)"},
-            timeout=12
-        ).json()
-        pages = r.get("query", {}).get("pages", {})
-        for p in pages.values():
-            ii = p.get("imageinfo", [{}])[0]
-            thumb = ii.get("thumburl") or ii.get("url")
-            if thumb and any(thumb.lower().endswith(ext) for ext in (".jpg", ".jpeg", ".png", ".webp")):
-                urls.append(thumb)
+        q_enc = urllib.parse.quote(f"{query} high resolution photo")
+        r = requests.get(f"https://www.bing.com/images/search?q={q_enc}&qft=+filterui:imagesize-large+filterui:photo-photo&form=IRFLTR", headers=headers, timeout=12)
+        soup = BeautifulSoup(r.text, "html.parser")
+        for a in soup.find_all("a", class_="iusc"):
+            m_attr = a.get("m")
+            if m_attr:
+                meta = json.loads(m_attr)
+                murl = meta.get("murl", "")
+                if murl.startswith("http") and any(ext in murl.lower() for ext in (".jpg", ".jpeg", ".png", ".webp")):
+                    urls.append(murl)
+                    if len(urls) >= max_results:
+                        break
     except Exception as e:
-        print(f"Wikimedia search warning ({query}): {e}")
+        print(f"Bing image search warning ({query}): {e}")
+
+    # Secondary source: Wikimedia Commons
+    if len(urls) < 3:
+        try:
+            r = requests.get(
+                "https://commons.wikimedia.org/w/api.php",
+                params={
+                    "action": "query", "generator": "search",
+                    "gsrsearch": f"filetype:bitmap {query}", "gsrnamespace": "6", "gsrlimit": "6",
+                    "prop": "imageinfo", "iiprop": "url", "iiurlwidth": "1280", "format": "json"
+                },
+                headers={"User-Agent": "NelloreDailyBot/1.0"},
+                timeout=12
+            ).json()
+            for p in r.get("query", {}).get("pages", {}).values():
+                ii = p.get("imageinfo", [{}])[0]
+                u = ii.get("thumburl") or ii.get("url")
+                if u and u.startswith("http"):
+                    urls.append(u)
+        except Exception:
+            pass
     return urls
 
-def generate_gemini_flash_image(prompt_text, out_path):
-    # Uses free-tier Gemini 2.5 Flash Image generation if available
+def download_verified_photo(url, out_path):
     try:
-        client = genai.Client(api_key=GEMINI_API_KEY)
-        res = client.models.generate_content(
-            model="gemini-2.5-flash-image",
-            contents=f"Generate a photorealistic 9:16 vertical high-resolution photograph, cinematic lighting, rich colors, realistic Indian context, no text or watermarks: {prompt_text}",
-            config=types.GenerateContentConfig(response_modalities=["IMAGE"])
-        )
-        for part in res.candidates[0].content.parts:
-            if part.inline_data and part.inline_data.data:
-                with open(out_path, "wb") as f:
-                    f.write(part.inline_data.data)
-                return out_path
-    except Exception as e:
-        print(f"Gemini image gen warning: {e}")
-    return None
-
-def download_image_file(url, out_path):
-    try:
-        r = requests.get(url, timeout=12, headers={"User-Agent": "NelloreDailyBot/1.0"})
-        if r.status_code == 200 and len(r.content) > 8000:
+        r = requests.get(url, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
+        if r.status_code == 200 and len(r.content) > 12000:
             img = Image.open(io.BytesIO(r.content)).convert("RGB")
-            if img.width >= 400 and img.height >= 300:
+            if img.width >= 500 and img.height >= 350:
                 img.save(out_path, quality=95)
+                print(f"Downloaded real photo ({img.width}x{img.height}): {out_path}")
                 return out_path
     except Exception:
         pass
     return None
 
-def gather_scene_images(scenes, article_url):
-    # Collect 4 distinct, verified, high-resolution images (NEVER black boxes)
+def gather_scene_images(scenes, rss_image_url=""):
     image_paths = []
     used_urls = set()
 
-    # 1. Try real article lead image for Scene 0
-    lead_url = resolve_article_image(article_url)
-    if lead_url:
-        p = download_image_file(lead_url, "scene_raw_0.jpg")
+    # Scene 0: Try RSS lead image first if available
+    if rss_image_url:
+        p = download_verified_photo(rss_image_url, "scene_raw_0.jpg")
         if p:
             image_paths.append(p)
-            used_urls.add(lead_url)
+            used_urls.add(rss_image_url)
 
-    # 2. Fill remaining scenes using Gemini Flash Image + Wikimedia Commons real photography
     for idx, scene in enumerate(scenes):
         if len(image_paths) > idx:
             continue
         out_file = f"scene_raw_{idx}.jpg"
-
-        # Try Gemini 2.5 Flash Image first for custom photorealistic 9:16 visual
-        ai_file = generate_gemini_flash_image(scene.get("ai_prompt", scene.get("wikimedia_query", "")), out_file)
-        if ai_file:
-            image_paths.append(ai_file)
-            continue
-
-        # Try Wikimedia Commons real photography matching the scene query
-        candidates = search_wikimedia_images(scene.get("wikimedia_query", "India news"))
+        query = scene.get("image_query", "India news")
+        candidates = search_web_images(query)
         if not candidates:
-            candidates = search_wikimedia_images("Andhra Pradesh India")
+            candidates = search_web_images("India city modern")
 
-        random.shuffle(candidates)
         picked = None
         for u in candidates:
             if u not in used_urls:
-                picked = download_image_file(u, out_file)
+                picked = download_verified_photo(u, out_file)
                 if picked:
                     used_urls.add(u)
                     break
@@ -298,10 +286,8 @@ def gather_scene_images(scenes, article_url):
         if picked:
             image_paths.append(picked)
         elif image_paths:
-            # Reuse an existing verified photo with different zoom/crop rather than ever showing black
-            image_paths.append(image_paths[0])
+            image_paths.append(image_paths[-1])
         else:
-            # Emergency fallback gradient
             img = Image.new("RGB", (1080, 1920), (24, 38, 68))
             img.save(out_file)
             image_paths.append(out_file)
@@ -341,20 +327,24 @@ def wrap_text(draw, text, font, max_width):
         lines.append(current)
     return lines
 
-def compose_scene_frame(bg_img_path, badge, headline_te, subtitle_te, scene_idx, total_scenes, out_png):
-    # Renders crisp 1080x1920 frame with separate Telugu & English fonts (ZERO tofu boxes, ZERO overlap)
+def compose_scene_frame(bg_img_path, badge, subtitle_te, scene_idx, total_scenes, out_png):
     src = Image.open(bg_img_path).convert("RGB")
+    # Enhance contrast & color vibrancy cleanly in Pillow
+    src = ImageEnhance.Contrast(src).enhance(1.10)
+    src = ImageEnhance.Color(src).enhance(1.18)
+    src = ImageEnhance.Sharpness(src).enhance(1.15)
+
     ratio = max(1080 / src.width, 1920 / src.height)
     resized = src.resize((int(src.width * ratio), int(src.height * ratio)), Image.LANCZOS)
     left = (resized.width - 1080) // 2
     top = (resized.height - 1920) // 2
     canvas = resized.crop((left, top, left + 1080, top + 1920)).convert("RGBA")
 
-    # Apply subtle top and bottom dark gradients so text is 100% readable over bright photos
+    # Top and bottom dark gradients so bright photos never wash out text
     grad = Image.new("RGBA", (1080, 1920), (0, 0, 0, 0))
     gdraw = ImageDraw.Draw(grad)
-    for y in range(0, 340):
-        a = int(200 * (1 - y / 340))
+    for y in range(0, 320):
+        a = int(190 * (1 - y / 320))
         gdraw.line([(0, y), (1080, y)], fill=(8, 12, 22, a))
     for y in range(1260, 1920):
         a = int(235 * ((y - 1260) / 660))
@@ -362,14 +352,14 @@ def compose_scene_frame(bg_img_path, badge, headline_te, subtitle_te, scene_idx,
     canvas = Image.alpha_composite(canvas, grad)
     draw = ImageDraw.Draw(canvas)
 
-    # Top Brand Bar: Telugu on left (Telugu font), English on right (English font -> NO tofu boxes!)
+    # Top Brand Header
     draw.rounded_rectangle([45, 70, 1035, 162], radius=20, fill=(220, 38, 38, 240))
     te_brand_font = load_font(42, "telugu")
     en_brand_font = load_font(36, "english")
     draw.text((80, 92), "నెల్లూరు డైలీ", fill=(255, 255, 255, 255), font=te_brand_font)
     draw.text((665, 96), "NELLORE DAILY", fill=(255, 255, 255, 255), font=en_brand_font)
 
-    # Category Pill (Pure English font -> crisp rendering)
+    # Category Pill
     badge_colors = {
         "NELLORE CITY": (14, 165, 233, 245),
         "JOBS ALERT": (22, 163, 74, 245),
@@ -382,21 +372,21 @@ def compose_scene_frame(bg_img_path, badge, headline_te, subtitle_te, scene_idx,
     badge_font = load_font(28, "english")
     draw.text((70, 197), f"LIVE  |  {badge.upper()}", fill=(255, 255, 255, 255), font=badge_font)
 
-    # Progress Segments Top-Right
+    # Scene Progress Bars
     bar_w = 52
     start_x = 1035 - (total_scenes * (bar_w + 10))
     for i in range(total_scenes):
-        col = (250, 204, 21, 255) if i <= scene_idx else (255, 255, 255, 100)
+        col = (250, 204, 21, 255) if i <= scene_idx else (255, 255, 255, 110)
         draw.rounded_rectangle([start_x + i * (bar_w + 10), 208, start_x + i * (bar_w + 10) + bar_w, 220], radius=6, fill=col)
 
-    # Bottom Caption Zone (Single unified glass card -> ZERO overlapping text)
+    # Bottom Caption Card
     sub_font = load_font(52, "telugu")
     lines = wrap_text(draw, subtitle_te, sub_font, 900)
     card_h = 46 + len(lines[:2]) * 74
     card_bottom = 1660
     card_top = card_bottom - card_h
 
-    draw.rounded_rectangle([55, card_top, 1025, card_bottom], radius=24, fill=(12, 18, 32, 225), outline=(250, 204, 21, 245), width=4)
+    draw.rounded_rectangle([55, card_top, 1025, card_bottom], radius=24, fill=(12, 18, 32, 220), outline=(250, 204, 21, 245), width=4)
     y = card_top + 22
     for line in lines[:2]:
         bbox = draw.textbbox((0, 0), line, font=sub_font)
@@ -407,7 +397,6 @@ def compose_scene_frame(bg_img_path, badge, headline_te, subtitle_te, scene_idx,
     canvas.convert("RGB").save(out_png, quality=95)
 
 async def generate_natural_voiceover(scenes, out_audio="voice.mp3"):
-    # Single continuous natural narration (no choppy multi-part cuts)
     full_script = " ".join(s["narration_te"].strip() for s in scenes)
     full_script = re.sub(r"#\S+", "", full_script)
     full_script = re.sub(r"[•|★☆🔥⚠️✅📍📅⏰🎬🏏💼👇]", " ", full_script)
@@ -422,35 +411,35 @@ async def generate_natural_voiceover(scenes, out_audio="voice.mp3"):
     ]).decode().strip()
     total_dur = max(float(probe), 10.0)
 
-    # Distribute scene durations proportionally to each scene's word count
     counts = [max(1, len(s["narration_te"].split())) for s in scenes]
     total_words = sum(counts)
-    durations = [max(2.6, (c / total_words) * total_dur + 0.35) for c in counts]
-    return durations
+    return [max(2.6, (c / total_words) * total_dur + 0.35) for c in counts]
 
-def build_cinema_video(scenes, durations, image_paths, badge, headline_te, bgm_path=None, out_video="reel.mp4"):
-    cinema_grade = "eq=contrast=1.08:brightness=0.02:saturation=1.16,unsharp=5:5:0.7:5:5:0.0"
+def build_fast_cinema_video(scenes, durations, image_paths, badge, bgm_path=None, out_video="reel.mp4"):
+    # Fast, crisp motion using scale+crop (renders in ~15 seconds instead of 30 minutes!)
     scene_clips = []
     total_scenes = len(scenes)
 
     for idx, (scene, dur, img_path) in enumerate(zip(scenes, durations, image_paths)):
         composed_png = f"composed_{idx}.png"
-        compose_scene_frame(img_path, badge, headline_te, scene.get("subtitle_te", ""), idx, total_scenes, composed_png)
+        compose_scene_frame(img_path, badge, scene.get("subtitle_te", ""), idx, total_scenes, composed_png)
 
         clip_out = f"clip_{idx}.mp4"
-        zoom_expr = "min(zoom+0.0012,1.10)" if idx % 2 == 0 else "max(1.10-on*0.0012,1.0)"
-        frames = int(dur * 30) + 6
+        # Smooth linear push-in / pull-out via scale+crop (100x faster than zoompan)
+        if idx % 2 == 0:
+            vf = f"scale='1080+iw*0.004*n':'1920+ih*0.004*n':eval=frame,crop=1080:1920,format=yuv420p"
+        else:
+            vf = f"scale='1188-iw*0.003*n':'2112-ih*0.003*n':eval=frame,crop=1080:1920,format=yuv420p"
+
         cmd = [
             "ffmpeg", "-y",
-            "-loop", "1", "-i", composed_png,
-            "-t", f"{dur:.2f}",
-            "-vf", f"scale=1188:2112,zoompan=z='{zoom_expr}':d={frames}:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=1080x1920:fps=30,{cinema_grade},format=yuv420p",
-            "-c:v", "libx264", "-preset", "fast", "-crf", "20", "-r", "30", clip_out
+            "-loop", "1", "-framerate", "30", "-t", f"{dur:.2f}", "-i", composed_png,
+            "-vf", vf,
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p", clip_out
         ]
         subprocess.run(cmd, check=True)
         scene_clips.append(clip_out)
 
-    # Smooth xfade transitions across scenes
     trans_dur = 0.4
     inputs = []
     for c in scene_clips:
@@ -469,17 +458,16 @@ def build_cinema_video(scenes, durations, image_paths, badge, headline_te, bgm_p
     subprocess.run([
         "ffmpeg", "-y", *inputs,
         "-filter_complex", ";".join(filter_parts),
-        "-map", "[vmerged]", "-c:v", "libx264", "-preset", "fast", "-crf", "20", "-pix_fmt", "yuv420p", "stitched.mp4"
+        "-map", "[vmerged]", "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p", "stitched.mp4"
     ], check=True)
 
-    # Combine stitched video + continuous voiceover + subtle BGM
     if bgm_path and os.path.exists(bgm_path):
         cmd_final = [
             "ffmpeg", "-y",
             "-i", "stitched.mp4",
             "-i", "voice.mp3",
             "-stream_loop", "-1", "-i", bgm_path,
-            "-filter_complex", "[2:a]volume=0.13[bgm];[1:a][bgm]amix=inputs=2:duration=first:dropout_transition=2[aout]",
+            "-filter_complex", "[2:a]volume=0.14[bgm];[1:a][bgm]amix=inputs=2:duration=first:dropout_transition=2[aout]",
             "-map", "0:v", "-map", "[aout]",
             "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-shortest", out_video
         ]
@@ -581,16 +569,21 @@ def main():
     story = generate_storyboard_with_gemini(articles)
     print("Selected Story:", story.get("headline_te"))
 
-    image_paths = gather_scene_images(story["scenes"], story["selected_link"])
+    rss_img = ""
+    for art in articles:
+        if art["link"] == story["selected_link"] and art.get("rss_image"):
+            rss_img = art["rss_image"]
+            break
+
+    image_paths = gather_scene_images(story["scenes"], rss_img)
     durations = asyncio.run(generate_natural_voiceover(story["scenes"]))
     bgm_file = pick_bgm(story.get("bgm_mood", "general"))
 
-    build_cinema_video(
+    build_fast_cinema_video(
         scenes=story["scenes"],
         durations=durations,
         image_paths=image_paths,
         badge=story.get("category_badge", "NELLORE CITY"),
-        headline_te=story.get("headline_te", "నెల్లూరు డైలీ"),
         bgm_path=bgm_file
     )
 
