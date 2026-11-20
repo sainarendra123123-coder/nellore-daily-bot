@@ -11,7 +11,6 @@ from datetime import datetime, timezone, timedelta
 import feedparser
 import requests
 import edge_tts
-from bs4 import BeautifulSoup
 from PIL import Image, ImageDraw, ImageFont, ImageEnhance
 from google import genai
 from google.genai import types
@@ -26,7 +25,6 @@ PREVIEW_ONLY = os.environ.get("PREVIEW_ONLY", "false").lower() == "true"
 IST = timezone(timedelta(hours=5, minutes=30))
 HISTORY_FILE = "posted_history.json"
 
-# Direct publisher RSS feeds (real og:image photos + latest today news, zero politics)
 CATEGORY_FEEDS = {
     "NELLORE CITY": [
         "https://www.eenadu.net/rss/andhra-pradesh.xml",
@@ -165,8 +163,8 @@ def generate_storyboard_with_gemini(articles):
        - Write one smooth, conversational 45-to-55 word Telugu voiceover split into 4 scenes.
        - Use everyday spoken Telugu (friendly Nellore tone, simple clear words, no stiff dubbing Telugu).
        - Keep each scene's "subtitle_te" SHORT (4 to 6 Telugu words max) so it looks clean and readable.
-    4. REAL PHOTO SEARCH KEYWORDS FOR EACH SCENE:
-       - For each of the 4 scenes, give a clean 2-3 word English image search query ("image_query") that reliably returns high-res real photos on the web (e.g., "Indian cricket stadium match", "Virat Kohli batting", "Indian students classroom exam", "gold jewelry necklace", "Nellore city India", "Telugu movie cinema theater").
+    4. WIKIPEDIA / WIKIMEDIA PHOTO KEYWORDS FOR EACH SCENE:
+       - For each of the 4 scenes, give a clean 2-word English Wikipedia/Wikimedia search topic ("image_query") that reliably has real high-res photos (e.g., "Cricket stadium", "India cricket", "University classroom", "Gold jewellery", "Nellore", "Telugu cinema", "Monsoon rain").
     5. METADATA:
        - "category_badge": One of "NELLORE CITY", "JOBS ALERT", "CRICKET", "TOLLYWOOD", "TRENDING".
        - "headline_te": Short 5-word Telugu headline.
@@ -199,52 +197,44 @@ def generate_storyboard_with_gemini(articles):
     raise RuntimeError(f"All Gemini models failed: {last_err}")
 
 def search_web_images(query, max_results=8):
-    # Reliable multi-source real image search (Bing Image Search HTML + Wikimedia Commons)
+    # Official Wikipedia + Wikimedia Commons APIs (never blocked on GitHub Actions)
     urls = []
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
-    }
-    try:
-        q_enc = urllib.parse.quote(f"{query} high resolution photo")
-        r = requests.get(f"https://www.bing.com/images/search?q={q_enc}&qft=+filterui:imagesize-large+filterui:photo-photo&form=IRFLTR", headers=headers, timeout=12)
-        soup = BeautifulSoup(r.text, "html.parser")
-        for a in soup.find_all("a", class_="iusc"):
-            m_attr = a.get("m")
-            if m_attr:
-                meta = json.loads(m_attr)
-                murl = meta.get("murl", "")
-                if murl.startswith("http") and any(ext in murl.lower() for ext in (".jpg", ".jpeg", ".png", ".webp")):
-                    urls.append(murl)
-                    if len(urls) >= max_results:
-                        break
-    except Exception as e:
-        print(f"Bing image search warning ({query}): {e}")
+    headers = {"User-Agent": "NelloreDailyBot/1.0 (https://github.com/sainarendra123123-coder)"}
+    short_q = " ".join(query.split()[:3])
 
-    # Secondary source: Wikimedia Commons
-    if len(urls) < 3:
+    for api_base in ["https://en.wikipedia.org/w/api.php", "https://commons.wikimedia.org/w/api.php"]:
         try:
             r = requests.get(
-                "https://commons.wikimedia.org/w/api.php",
+                api_base,
                 params={
-                    "action": "query", "generator": "search",
-                    "gsrsearch": f"filetype:bitmap {query}", "gsrnamespace": "6", "gsrlimit": "6",
-                    "prop": "imageinfo", "iiprop": "url", "iiurlwidth": "1280", "format": "json"
+                    "action": "query",
+                    "generator": "search",
+                    "gsrsearch": short_q if "wikipedia" in api_base else f"filetype:bitmap {short_q}",
+                    "gsrnamespace": "0" if "wikipedia" in api_base else "6",
+                    "gsrlimit": str(max_results),
+                    "prop": "pageimages|imageinfo",
+                    "piprop": "original|thumbnail",
+                    "pithumbsize": "1280",
+                    "iiprop": "url",
+                    "iiurlwidth": "1280",
+                    "format": "json"
                 },
-                headers={"User-Agent": "NelloreDailyBot/1.0"},
+                headers=headers,
                 timeout=12
             ).json()
             for p in r.get("query", {}).get("pages", {}).values():
-                ii = p.get("imageinfo", [{}])[0]
-                u = ii.get("thumburl") or ii.get("url")
-                if u and u.startswith("http"):
-                    urls.append(u)
-        except Exception:
-            pass
+                orig = p.get("original", {}).get("source") or p.get("thumbnail", {}).get("source")
+                if not orig and p.get("imageinfo"):
+                    orig = p["imageinfo"][0].get("thumburl") or p["imageinfo"][0].get("url")
+                if orig and any(orig.lower().endswith(ext) for ext in (".jpg", ".jpeg", ".png", ".webp")):
+                    urls.append(orig)
+        except Exception as e:
+            print(f"Image API warning ({api_base}): {e}")
     return urls
 
 def download_verified_photo(url, out_path):
     try:
-        r = requests.get(url, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
+        r = requests.get(url, timeout=10, headers={"User-Agent": "NelloreDailyBot/1.0 (https://github.com/sainarendra123123-coder)"})
         if r.status_code == 200 and len(r.content) > 12000:
             img = Image.open(io.BytesIO(r.content)).convert("RGB")
             if img.width >= 500 and img.height >= 350:
@@ -259,7 +249,6 @@ def gather_scene_images(scenes, rss_image_url=""):
     image_paths = []
     used_urls = set()
 
-    # Scene 0: Try RSS lead image first if available
     if rss_image_url:
         p = download_verified_photo(rss_image_url, "scene_raw_0.jpg")
         if p:
@@ -270,10 +259,10 @@ def gather_scene_images(scenes, rss_image_url=""):
         if len(image_paths) > idx:
             continue
         out_file = f"scene_raw_{idx}.jpg"
-        query = scene.get("image_query", "India news")
+        query = scene.get("image_query", "India")
         candidates = search_web_images(query)
         if not candidates:
-            candidates = search_web_images("India city modern")
+            candidates = search_web_images("Andhra Pradesh India")
 
         picked = None
         for u in candidates:
@@ -329,7 +318,6 @@ def wrap_text(draw, text, font, max_width):
 
 def compose_scene_frame(bg_img_path, badge, subtitle_te, scene_idx, total_scenes, out_png):
     src = Image.open(bg_img_path).convert("RGB")
-    # Enhance contrast & color vibrancy cleanly in Pillow
     src = ImageEnhance.Contrast(src).enhance(1.10)
     src = ImageEnhance.Color(src).enhance(1.18)
     src = ImageEnhance.Sharpness(src).enhance(1.15)
@@ -340,7 +328,6 @@ def compose_scene_frame(bg_img_path, badge, subtitle_te, scene_idx, total_scenes
     top = (resized.height - 1920) // 2
     canvas = resized.crop((left, top, left + 1080, top + 1920)).convert("RGBA")
 
-    # Top and bottom dark gradients so bright photos never wash out text
     grad = Image.new("RGBA", (1080, 1920), (0, 0, 0, 0))
     gdraw = ImageDraw.Draw(grad)
     for y in range(0, 320):
@@ -416,7 +403,6 @@ async def generate_natural_voiceover(scenes, out_audio="voice.mp3"):
     return [max(2.6, (c / total_words) * total_dur + 0.35) for c in counts]
 
 def build_fast_cinema_video(scenes, durations, image_paths, badge, bgm_path=None, out_video="reel.mp4"):
-    # Fast, crisp motion using scale+crop (renders in ~15 seconds instead of 30 minutes!)
     scene_clips = []
     total_scenes = len(scenes)
 
@@ -425,11 +411,10 @@ def build_fast_cinema_video(scenes, durations, image_paths, badge, bgm_path=None
         compose_scene_frame(img_path, badge, scene.get("subtitle_te", ""), idx, total_scenes, composed_png)
 
         clip_out = f"clip_{idx}.mp4"
-        # Smooth linear push-in / pull-out via scale+crop (100x faster than zoompan)
         if idx % 2 == 0:
-            vf = f"scale='1080+iw*0.004*n':'1920+ih*0.004*n':eval=frame,crop=1080:1920,format=yuv420p"
+            vf = "scale=1160:2062,crop=1080:1920:'min(80, n*1.2)':'min(142, n*2.0)',format=yuv420p"
         else:
-            vf = f"scale='1188-iw*0.003*n':'2112-ih*0.003*n':eval=frame,crop=1080:1920,format=yuv420p"
+            vf = "scale=1160:2062,crop=1080:1920:'max(0, 80-n*1.2)':'max(0, 142-n*2.0)',format=yuv420p"
 
         cmd = [
             "ffmpeg", "-y",
@@ -613,3 +598,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    
