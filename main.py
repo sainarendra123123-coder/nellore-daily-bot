@@ -67,7 +67,6 @@ POLITICS_BLOCKLIST = [
 ]
 
 GEMINI_MODELS = ["gemini-3.8-flash", "gemini-3.5-flash-lite"]
-IMAGE_GEN_MODELS = ["gemini-2.5-flash-image", "gemini-2.0-flash-exp-image-generation"]
 
 
 def load_history():
@@ -160,10 +159,10 @@ STRICT RULES:
 4. NATURAL SPOKEN TELUGU VOICEOVER:
    - Write a warm, conversational 45-to-55 word Telugu script split into 4 scenes.
    - Use everyday spoken Nellore Telugu (e.g., "మన నెల్లూరు వాళ్లకి...", "మన ఆటో అన్నలకు...").
-5. CUSTOM STORY-SPECIFIC 9:16 VERTICAL SCENE PROMPTS (EXACT AUTO-REEL STYLE):
+5. CUSTOM 9:16 VERTICAL AI VIDEO / VISUAL PROMPTS FOR EACH SCENE:
    - For each of the 4 scenes, write:
-     a) "visual_prompt": A vivid, cohesive, realistic 9:16 vertical scene prompt tailored specifically to that scene in South India / Andhra Pradesh (e.g., "Cinematic sunlit avenue in Nellore Andhra Pradesh with bright yellow auto rickshaws driving past green trees, clear blue sky in upper third, warm golden light, photorealistic, vertical 9:16, no text"). Always keep the top third open sky/clean background so the white Telugu hook title reads clearly!
-     b) "photo_query": A clean 2-to-3 word English photography search phrase as emergency backup (e.g., "yellow auto rickshaw India", "Indian cricket stadium", "gold jewellery India", "Indian students classroom").
+     a) "visual_prompt": A vivid, realistic, cinematic 9:16 vertical scene description set in South India / Andhra Pradesh with natural motion (e.g., "Cinematic sunlit street in Nellore Andhra Pradesh with yellow auto rickshaws moving down a tree-lined avenue, clear blue sky in upper third, warm golden sunlight, photorealistic, vertical 9:16, no text"). Keep the top third clean sky/open background so white hook text stands out clearly!
+     b) "photo_query": A 2-to-3 word English photography backup query (e.g., "auto rickshaw India", "Indian cricket stadium", "gold jewellery India", "Indian students classroom").
    - Make all 4 scenes visually distinct!
 6. METADATA:
    - "category_badge": One of "NELLORE CITY", "JOBS ALERT", "CRICKET", "TOLLYWOOD", "TRENDING".
@@ -200,103 +199,141 @@ Return strictly valid JSON with keys:
     raise RuntimeError(f"All Gemini models failed: {last_err}")
 
 
-def generate_story_scene_image(prompt, out_jpg):
-    """Generates a custom 9:16 story-specific scene using Gemini native image generation."""
-    client = genai.Client(api_key=GEMINI_API_KEY)
-    full_prompt = f"{prompt}. Photorealistic editorial photography, vibrant warm colors, vertical 9:16 portrait composition, strictly no text, no watermarks."
+def generate_pollinations_ai_video(prompt, out_mp4, seed):
+    """Generates a real 9:16 AI moving video clip via Pollinations Video API (free, no key needed)."""
+    clean_p = f"{prompt}, cinematic smooth camera motion, realistic, no text, no watermarks"
+    encoded = urllib.parse.quote(clean_p)
+    for vid_model in ("wan", "seedance"):
+        url = (
+            f"https://gen.pollinations.ai/video/{encoded}"
+            f"?model={vid_model}&width=720&height=1280&duration=5&seed={seed}&nologo=true"
+        )
+        try:
+            r = requests.get(url, headers=BROWSER_HEADERS, timeout=75)
+            ctype = r.headers.get("Content-Type", "")
+            if r.status_code == 200 and ("video" in ctype or len(r.content) > 250_000):
+                with open(out_mp4, "wb") as f:
+                    f.write(r.content)
+                # Verify valid video stream with ffprobe
+                probe = subprocess.run(
+                    ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=codec_name", "-of", "csv=p=0", out_mp4],
+                    capture_output=True,
+                    text=True,
+                )
+                if probe.returncode == 0 and probe.stdout.strip():
+                    print(f"Generated real AI video clip ({vid_model}): {out_mp4}")
+                    return out_mp4
+        except Exception as e:
+            print(f"Pollinations video ({vid_model}) notice: {e}")
+    return None
 
-    for img_model in IMAGE_GEN_MODELS:
+
+def generate_pollinations_flux_motion_clip(prompt, out_mp4, seed):
+    """Generates a custom 1080x1920 9:16 Flux AI scene and converts it to a smooth moving clip."""
+    clean_p = f"{prompt}, photorealistic editorial photography, vibrant warm lighting, vertical 9:16, no text, no watermark"
+    encoded = urllib.parse.quote(clean_p)
+    for model in ("flux", "turbo"):
+        url = (
+            f"https://image.pollinations.ai/prompt/{encoded}"
+            f"?width=1080&height=1920&model={model}&seed={seed}&nologo=true&enhance=true"
+        )
         for attempt in range(2):
             try:
-                resp = client.models.generate_content(
-                    model=img_model,
-                    contents=full_prompt,
-                    config=types.GenerateContentConfig(
-                        response_modalities=["IMAGE"],
-                        image_config=types.ImageConfig(aspect_ratio="9:16"),
-                    ),
-                )
-                for part in resp.candidates[0].content.parts:
-                    if getattr(part, "inline_data", None) and part.inline_data.data:
-                        img = Image.open(io.BytesIO(part.inline_data.data)).convert("RGB")
-                        img.save(out_jpg, quality=95)
-                        print(f"Generated custom 9:16 scene ({img_model}): {out_jpg}")
-                        return out_jpg
+                r = requests.get(url, headers=BROWSER_HEADERS, timeout=45)
+                if r.status_code == 200 and len(r.content) > 25_000:
+                    img = Image.open(io.BytesIO(r.content)).convert("RGB")
+                    jpg_path = out_mp4.replace(".mp4", ".jpg")
+                    img.save(jpg_path, quality=95)
+                    subprocess.run(
+                        [
+                            "ffmpeg", "-y", "-loop", "1", "-framerate", "30", "-t", "8", "-i", jpg_path,
+                            "-vf", "scale=1180:2098,crop=1080:1920:'min(100, n*0.6)':'min(178, n*1.0)',format=yuv420p",
+                            "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", out_mp4,
+                        ],
+                        check=True,
+                    )
+                    print(f"Generated custom 9:16 Flux AI motion clip ({model}): {out_mp4}")
+                    return out_mp4
             except Exception as e:
-                print(f"Gemini image gen ({img_model}) attempt {attempt + 1}: {e}")
+                print(f"Pollinations Flux ({model}) attempt {attempt + 1}: {e}")
                 time.sleep(2)
-
-    try:
-        res = client.models.generate_images(
-            model="imagen-3.0-generate-002",
-            prompt=full_prompt,
-            config=types.GenerateImagesConfig(
-                number_of_images=1,
-                aspect_ratio="9:16",
-                output_mime_type="image/jpeg",
-            ),
-        )
-        if res.generated_images:
-            img_bytes = res.generated_images[0].image.image_bytes
-            Image.open(io.BytesIO(img_bytes)).convert("RGB").save(out_jpg, quality=95)
-            print(f"Generated custom 9:16 scene (imagen-3): {out_jpg}")
-            return out_jpg
-    except Exception as e:
-        print(f"Imagen fallback notice: {e}")
-
     return None
 
 
-def download_clean_photo_backup(query, out_jpg, used_urls):
-    """Clean photography backup (DuckDuckGo + Wikimedia) — zero scanned documents."""
-    try:
-        q_enc = urllib.parse.quote_plus(query)
-        home = requests.get(f"https://duckduckgo.com/?q={q_enc}&iax=images&ia=images", headers=BROWSER_HEADERS, timeout=10)
-        vqd_m = re.search(r'vqd=["\']?([^"\'&]+)', home.text)
-        if vqd_m:
-            ddg = requests.get(
-                "https://duckduckgo.com/i.js",
-                params={"l": "in-en", "o": "json", "q": query, "vqd": vqd_m.group(1), "f": ",,,", "p": "1"},
-                headers=BROWSER_HEADERS,
-                timeout=10,
+def download_wikimedia_motion_clip(query, out_mp4, used_urls):
+    """Datacenter-safe Wikimedia Commons photography fallback."""
+    for q in (query, "Andhra Pradesh", "India"):
+        try:
+            r = requests.get(
+                "https://commons.wikimedia.org/w/api.php",
+                params={
+                    "action": "query",
+                    "generator": "search",
+                    "gsrsearch": f"filetype:bitmap {q}",
+                    "gsrnamespace": "6",
+                    "gsrlimit": "12",
+                    "prop": "imageinfo",
+                    "iiprop": "url",
+                    "iiurlwidth": "1280",
+                    "format": "json",
+                },
+                headers={"User-Agent": "NelloreDailyBot/10.0 (https://instagram.com/nelloredaily)"},
+                timeout=12,
             ).json()
-            for item in ddg.get("results", []):
-                u = item.get("image", "")
-                if u.startswith("http") and u not in used_urls:
-                    r = requests.get(u, headers=BROWSER_HEADERS, timeout=10)
-                    if r.status_code == 200 and len(r.content) > 20_000:
-                        img = Image.open(io.BytesIO(r.content)).convert("RGB")
-                        if img.width >= 500 and img.height >= 350:
-                            img.save(out_jpg, quality=95)
-                            used_urls.add(u)
-                            print(f"Downloaded backup photo ({query}): {out_jpg}")
-                            return out_jpg
-    except Exception as e:
-        print(f"Photo backup notice ({query}): {e}")
+            for p in r.get("query", {}).get("pages", {}).values():
+                if p.get("imageinfo"):
+                    u = p["imageinfo"][0].get("thumburl") or p["imageinfo"][0].get("url")
+                    if u and u not in used_urls and any(u.lower().endswith(ext) for ext in (".jpg", ".jpeg", ".png")):
+                        vr = requests.get(u, headers=BROWSER_HEADERS, timeout=12)
+                        if vr.status_code == 200 and len(vr.content) > 20_000:
+                            img = Image.open(io.BytesIO(vr.content)).convert("RGB")
+                            if img.width >= 500 and img.height >= 350:
+                                jpg_path = out_mp4.replace(".mp4", ".jpg")
+                                img.save(jpg_path, quality=95)
+                                subprocess.run(
+                                    [
+                                        "ffmpeg", "-y", "-loop", "1", "-framerate", "30", "-t", "8", "-i", jpg_path,
+                                        "-vf", "scale=1180:2098,crop=1080:1920:'min(100, n*0.6)':'min(178, n*1.0)',format=yuv420p",
+                                        "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", out_mp4,
+                                    ],
+                                    check=True,
+                                )
+                                used_urls.add(u)
+                                print(f"Created Wikimedia backup clip ({q}): {out_mp4}")
+                                return out_mp4
+        except Exception as e:
+            print(f"Wikimedia notice ({q}): {e}")
     return None
 
 
-def gather_scene_visuals(scenes):
-    image_paths = []
+def gather_scene_videos(scenes):
+    video_paths = []
     used_urls = set()
+    base_seed = int(time.time()) % 100000
 
     for idx, scene in enumerate(scenes):
-        out_jpg = f"scene_raw_{idx}.jpg"
+        out_mp4 = f"raw_clip_{idx}.mp4"
         v_prompt = scene.get(
             "visual_prompt",
-            "Vibrant sunlit street in Nellore Andhra Pradesh with yellow auto rickshaws and clear blue sky at top, photorealistic",
+            "Vibrant sunlit street in Nellore Andhra Pradesh with yellow auto rickshaws and clear blue sky at top",
         )
-        q_backup = scene.get("photo_query", "Andhra Pradesh India city street")
+        q_backup = scene.get("photo_query", "India city street")
+        seed = base_seed + idx * 17
 
-        picked = generate_story_scene_image(v_prompt, out_jpg) or download_clean_photo_backup(q_backup, out_jpg, used_urls)
+        picked = (
+            generate_pollinations_ai_video(v_prompt, out_mp4, seed)
+            or generate_pollinations_flux_motion_clip(v_prompt, out_mp4, seed)
+            or download_wikimedia_motion_clip(q_backup, out_mp4, used_urls)
+        )
 
         if picked:
-            image_paths.append(picked)
-        elif image_paths:
-            image_paths.append(image_paths[-1])
+            video_paths.append(picked)
+        elif video_paths:
+            video_paths.append(video_paths[-1])
         else:
-            raise RuntimeError("Could not generate or download story visuals.")
-    return image_paths
+            raise RuntimeError("Could not generate or download scene clips.")
+
+    return video_paths
 
 
 def load_font(size, script="telugu"):
@@ -327,34 +364,22 @@ def draw_shaped_text(draw, xy, text, font, fill):
         draw.text(xy, text, fill=fill, font=font)
 
 
-def render_auto_reel_frame(bg_img_path, hook_te, caption_words, highlight_idx, show_hook, out_png):
-    src = Image.open(bg_img_path).convert("RGB")
-    src = ImageEnhance.Color(src).enhance(1.15)
-    src = ImageEnhance.Contrast(src).enhance(1.06)
-
-    scale = max(1080 / src.width, 1920 / src.height)
-    resized = src.resize((int(src.width * scale), int(src.height * scale)), Image.LANCZOS)
-    left = (resized.width - 1080) // 2
-    top = (resized.height - 1920) // 2
-    canvas = resized.crop((left, top, left + 1080, top + 1920)).convert("RGBA")
-
-    grad = Image.new("RGBA", (1080, 1920), (0, 0, 0, 0))
-    gdraw = ImageDraw.Draw(grad)
-    for y in range(0, 620):
-        alpha = int(110 * (1 - y / 620))
-        gdraw.line([(0, y), (1080, y)], fill=(0, 0, 0, alpha))
-    for y in range(1420, 1920):
-        prog = (y - 1420) / 500
-        alpha = int(150 * prog)
-        gdraw.line([(0, y), (1080, y)], fill=(0, 0, 0, alpha))
-    canvas = Image.alpha_composite(canvas, grad)
-
+def render_transparent_overlay(hook_te, caption_words, highlight_idx, show_hook, out_png):
+    canvas = Image.new("RGBA", (1080, 1920), (0, 0, 0, 0))
     draw = ImageDraw.Draw(canvas)
+
+    for y in range(0, 560):
+        alpha = int(115 * (1 - y / 560))
+        draw.line([(0, y), (1080, y)], fill=(0, 0, 0, alpha))
+    for y in range(1450, 1920):
+        prog = (y - 1450) / 470
+        alpha = int(150 * prog)
+        draw.line([(0, y), (1080, y)], fill=(0, 0, 0, alpha))
 
     # 1. Top-Left Minimalist Watermark ('• NELLORE DAILY')
     wm_font = load_font(25, "english")
     draw.ellipse([72, 86, 86, 100], fill=(250, 204, 21, 245))
-    draw.text((98, 79), "NELLORE DAILY", fill=(255, 255, 255, 235), font=wm_font)
+    draw.text((98, 79), "NELLORE DAILY", fill=(255, 255, 255, 240), font=wm_font)
 
     # 2. Big Bold Telugu Hook Headline in Upper Third
     if show_hook and hook_te:
@@ -376,7 +401,7 @@ def render_auto_reel_frame(bg_img_path, hook_te, caption_words, highlight_idx, s
         for line in lines[:2]:
             bbox = draw.textbbox((0, 0), line, font=hook_font)
             hx = (1080 - (bbox[2] - bbox[0])) // 2
-            draw_shaped_text(draw, (hx + 3, hy + 4), line, hook_font, (0, 0, 0, 155))
+            draw_shaped_text(draw, (hx + 3, hy + 4), line, hook_font, (0, 0, 0, 165))
             draw_shaped_text(draw, (hx, hy), line, hook_font, (255, 255, 255, 255))
             hy += 96
 
@@ -405,7 +430,7 @@ def render_auto_reel_frame(bg_img_path, hook_te, caption_words, highlight_idx, s
             draw_shaped_text(draw, (cx, cy), word, cap_font, color)
             cx += ww + space_w
 
-    canvas.convert("RGB").save(out_png, quality=95)
+    canvas.save(out_png)
 
 
 async def generate_voice_with_word_timings(scenes, out_audio="voice.mp3"):
@@ -446,11 +471,33 @@ async def generate_voice_with_word_timings(scenes, out_audio="voice.mp3"):
     return total_dur, word_events
 
 
-def build_karaoke_cinema_reel(scenes, total_dur, word_events, image_paths, hook_te, bgm_path=None, out_video="reel.mp4"):
-    fps = 24
-    total_frames = int(total_dur * fps)
-    num_scenes = len(image_paths)
-    frames_per_scene = max(1, total_frames // num_scenes)
+def build_real_video_reel(scenes, total_dur, word_events, video_paths, hook_te, bgm_path=None, out_video="reel.mp4"):
+    num_scenes = len(video_paths)
+    scene_dur = total_dur / num_scenes
+    norm_clips = []
+
+    for idx, vpath in enumerate(video_paths):
+        norm_out = f"norm_{idx}.mp4"
+        cmd = [
+            "ffmpeg", "-y", "-stream_loop", "-1", "-i", vpath,
+            "-t", f"{scene_dur:.2f}",
+            "-vf", "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,fps=30,format=yuv420p",
+            "-an", "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", norm_out,
+        ]
+        subprocess.run(cmd, check=True)
+        norm_clips.append(norm_out)
+
+    with open("concat.txt", "w") as cf:
+        for nc in norm_clips:
+            cf.write(f"file '{nc}'\n")
+    subprocess.run(
+        ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", "concat.txt", "-c", "copy", "base_video.mp4"],
+        check=True,
+    )
+
+    ov_fps = 10
+    total_ov_frames = int(total_dur * ov_fps) + 1
+    hook_end_t = scene_dur * 2.0
 
     chunks = []
     for i in range(0, len(word_events), 4):
@@ -462,16 +509,12 @@ def build_karaoke_cinema_reel(scenes, total_dur, word_events, image_paths, hook_
             "end_t": group[-1]["end"] + 0.35,
         })
 
-    os.makedirs("frames", exist_ok=True)
-    rendered_cache = {}
-
-    for f_idx in range(total_frames):
-        t = f_idx / fps
-        scene_idx = min(num_scenes - 1, f_idx // frames_per_scene)
-        show_hook = scene_idx <= 1
-
-        active_chunk = None
-        active_word_idx = -1
+    os.makedirs("ov_frames", exist_ok=True)
+    cache = {}
+    for f_idx in range(total_ov_frames):
+        t = f_idx / ov_fps
+        show_hook = t <= hook_end_t
+        active_chunk, active_word_idx = None, -1
         for c_idx, ch in enumerate(chunks):
             if ch["start_t"] <= t <= ch["end_t"]:
                 active_chunk = c_idx
@@ -480,53 +523,42 @@ def build_karaoke_cinema_reel(scenes, total_dur, word_events, image_paths, hook_
                         active_word_idx = w_i
                 break
 
-        cache_key = (scene_idx, show_hook, active_chunk, active_word_idx)
-        if cache_key not in rendered_cache:
-            cached_png = f"frames/base_{scene_idx}_{int(show_hook)}_{active_chunk}_{active_word_idx}.png"
+        key = (show_hook, active_chunk, active_word_idx)
+        if key not in cache:
+            cached_png = f"ov_frames/cache_{int(show_hook)}_{active_chunk}_{active_word_idx}.png"
             words_list = chunks[active_chunk]["words"] if active_chunk is not None else []
-            render_auto_reel_frame(
-                image_paths[scene_idx],
-                hook_te,
-                words_list,
-                active_word_idx,
-                show_hook,
-                cached_png,
-            )
-            rendered_cache[cache_key] = cached_png
+            render_transparent_overlay(hook_te, words_list, active_word_idx, show_hook, cached_png)
+            cache[key] = cached_png
 
-        local_f = f_idx % frames_per_scene
-        zoom = 1.0 + 0.08 * (local_f / max(1, frames_per_scene))
-        frame_img = Image.open(rendered_cache[cache_key])
-        if zoom > 1.002:
-            zw, zh = int(1080 * zoom), int(1920 * zoom)
-            z_img = frame_img.resize((zw, zh), Image.BILINEAR)
-            lx = int((zw - 1080) * (0.3 + 0.4 * (scene_idx % 2)))
-            ty = (zh - 1920) // 2
-            frame_img = z_img.crop((lx, ty, lx + 1080, ty + 1920))
-        frame_img.save(f"frames/f_{f_idx:05d}.jpg", quality=92)
-
-    subprocess.run(
-        [
-            "ffmpeg", "-y", "-framerate", str(fps), "-i", "frames/f_%05d.jpg",
-            "-c:v", "libx264", "-profile:v", "high", "-level", "4.1",
-            "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p", "stitched.mp4",
-        ],
-        check=True,
-    )
+        os.symlink(os.path.abspath(cache[key]), f"ov_frames/ov_{f_idx:05d}.png")
 
     if bgm_path and os.path.exists(bgm_path):
         cmd_final = [
-            "ffmpeg", "-y", "-i", "stitched.mp4", "-i", "voice.mp3", "-stream_loop", "-1",
-            "-i", bgm_path, "-filter_complex",
-            "[2:a]volume=0.14[bgm];[1:a][bgm]amix=inputs=2:duration=first:dropout_transition=2[aout]",
-            "-map", "0:v", "-map", "[aout]", "-c:v", "copy", "-c:a", "aac", "-ar", "44100",
-            "-ac", "2", "-b:a", "192k", "-movflags", "+faststart", "-shortest", out_video,
+            "ffmpeg", "-y",
+            "-i", "base_video.mp4",
+            "-framerate", str(ov_fps), "-i", "ov_frames/ov_%05d.png",
+            "-i", "voice.mp3",
+            "-stream_loop", "-1", "-i", bgm_path,
+            "-filter_complex",
+            "[0:v][1:v]overlay=0:0:shortest=1[vout];[3:a]volume=0.14[bgm];[2:a][bgm]amix=inputs=2:duration=first:dropout_transition=2[aout]",
+            "-map", "[vout]", "-map", "[aout]",
+            "-c:v", "libx264", "-profile:v", "high", "-level", "4.1",
+            "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
+            "-c:a", "aac", "-ar", "44100", "-ac", "2", "-b:a", "192k",
+            "-movflags", "+faststart", "-shortest", out_video,
         ]
     else:
         cmd_final = [
-            "ffmpeg", "-y", "-i", "stitched.mp4", "-i", "voice.mp3",
-            "-map", "0:v", "-map", "1:a", "-c:v", "copy", "-c:a", "aac", "-ar", "44100",
-            "-ac", "2", "-b:a", "192k", "-movflags", "+faststart", "-shortest", out_video,
+            "ffmpeg", "-y",
+            "-i", "base_video.mp4",
+            "-framerate", str(ov_fps), "-i", "ov_frames/ov_%05d.png",
+            "-i", "voice.mp3",
+            "-filter_complex", "[0:v][1:v]overlay=0:0:shortest=1[vout]",
+            "-map", "[vout]", "-map", "2:a",
+            "-c:v", "libx264", "-profile:v", "high", "-level", "4.1",
+            "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
+            "-c:a", "aac", "-ar", "44100", "-ac", "2", "-b:a", "192k",
+            "-movflags", "+faststart", "-shortest", out_video,
         ]
     subprocess.run(cmd_final, check=True)
 
@@ -626,15 +658,15 @@ def main():
     story = generate_storyboard_with_gemini(articles)
     print("Selected Hook:", story.get("hook_te"))
 
-    image_paths = gather_scene_visuals(story["scenes"])
+    video_paths = gather_scene_visuals(story["scenes"])
     total_dur, word_events = asyncio.run(generate_voice_with_word_timings(story["scenes"]))
     bgm_file = pick_bgm(story.get("bgm_mood", "emotional"))
 
-    build_karaoke_cinema_reel(
+    build_real_video_reel(
         scenes=story["scenes"],
         total_dur=total_dur,
         word_events=word_events,
-        image_paths=image_paths,
+        video_paths=video_paths,
         hook_te=story.get("hook_te", "తాజా వార్త!"),
         bgm_path=bgm_file,
     )
