@@ -13,7 +13,7 @@ from datetime import datetime, timezone, timedelta
 import feedparser
 import requests
 import edge_tts
-from PIL import Image, ImageDraw, ImageFont, ImageEnhance
+from PIL import Image, ImageDraw, ImageFont
 from google import genai
 from google.genai import types
 
@@ -26,6 +26,7 @@ PREVIEW_ONLY = os.environ.get("PREVIEW_ONLY", "false").lower() == "true"
 
 IST = timezone(timedelta(hours=5, minutes=30))
 HISTORY_FILE = "posted_history.json"
+NUM_SHOTS = 10
 
 BROWSER_HEADERS = {
     "User-Agent": (
@@ -156,21 +157,19 @@ STRICT RULES:
 2. TOPIC: Prefer '{preferred_cat}' if a strong fresh story is available; otherwise pick the best fresh story on Nellore city updates/schemes/food, AP/Nellore Jobs, Cricket, Tollywood, or Gold/Silver & trending facts.
 3. HOOK TITLE ("hook_te"):
    - Super punchy 2-to-3 word Telugu emotional hook shown big in the upper third (like "అదిరిపోయే శుభవార్త!" or "ఒక ఎమోషన్!").
-4. NATURAL SPOKEN TELUGU VOICEOVER:
-   - Write a warm, conversational 45-to-55 word Telugu script split into 4 scenes.
+4. NATURAL SPOKEN TELUGU VOICEOVER ("narration_te"):
+   - Write ONE smooth, engaging, conversational 50-to-60 word Telugu voiceover script (around 18-22 seconds spoken).
    - Use everyday spoken Nellore Telugu (e.g., "మన నెల్లూరు వాళ్లకి...", "మన ఆటో అన్నలకు...").
-5. CUSTOM 9:16 VERTICAL AI VIDEO / VISUAL PROMPTS FOR EACH SCENE:
-   - For each of the 4 scenes, write:
-     a) "visual_prompt": A vivid, realistic, cinematic 9:16 vertical scene description set in South India / Andhra Pradesh with natural motion (e.g., "Cinematic sunlit street in Nellore Andhra Pradesh with yellow auto rickshaws moving down a tree-lined avenue, clear blue sky in upper third, warm golden sunlight, photorealistic, vertical 9:16, no text"). Keep the top third clean sky/open background so white hook text stands out clearly!
-     b) "photo_query": A 2-to-3 word English photography backup query (e.g., "auto rickshaw India", "Indian cricket stadium", "gold jewellery India", "Indian students classroom").
-   - Make all 4 scenes visually distinct!
+5. EXACTLY 10 DIFFERENT VISUAL SHOT QUERIES ("shot_queries" array of 10 unique strings):
+   - Provide 10 distinct 2-to-3 word English stock video/photo search phrases matching the story's scenes (e.g. ["Indian auto rickshaw", "Indian city traffic", "smiling Indian driver", "Indian rupee cash", "smartphone banking", "Nellore highway", "yellow rickshaw street", "golden hour city", "Indian commuters", "Andhra Pradesh road"]).
+   - All 10 queries MUST be different!
 6. METADATA:
    - "category_badge": One of "NELLORE CITY", "JOBS ALERT", "CRICKET", "TOLLYWOOD", "TRENDING".
    - "caption": Detailed, helpful Instagram & Facebook caption in Telugu + English with emojis, bullet points, source credit, and hashtags.
    - "bgm_mood": One of "emotional", "breaking", "devotional", "general".
 
 Return strictly valid JSON with keys:
-"selected_link", "category_badge", "hook_te", "scenes" (array of 4 objects with "narration_te", "visual_prompt", "photo_query"), "caption", "bgm_mood"
+"selected_link", "category_badge", "hook_te", "narration_te", "shot_queries" (array of 10 unique strings), "caption", "bgm_mood"
 """
 
     last_err = None
@@ -182,14 +181,15 @@ Return strictly valid JSON with keys:
                     contents=prompt,
                     config=types.GenerateContentConfig(
                         response_mime_type="application/json",
-                        temperature=0.4,
+                        temperature=0.45,
                     ),
                 )
                 data = json.loads(response.text)
                 if (
                     data.get("selected_link")
-                    and isinstance(data.get("scenes"), list)
-                    and len(data["scenes"]) >= 3
+                    and data.get("narration_te")
+                    and isinstance(data.get("shot_queries"), list)
+                    and len(data["shot_queries"]) >= 6
                 ):
                     return data
             except Exception as e:
@@ -199,70 +199,53 @@ Return strictly valid JSON with keys:
     raise RuntimeError(f"All Gemini models failed: {last_err}")
 
 
-def generate_pollinations_ai_video(prompt, out_mp4, seed):
-    """Generates a real 9:16 AI moving video clip via Pollinations Video API (free, no key needed)."""
-    clean_p = f"{prompt}, cinematic smooth camera motion, realistic, no text, no watermarks"
-    encoded = urllib.parse.quote(clean_p)
-    for vid_model in ("wan", "seedance"):
-        url = (
-            f"https://gen.pollinations.ai/video/{encoded}"
-            f"?model={vid_model}&width=720&height=1280&duration=5&seed={seed}&nologo=true"
-        )
+def fetch_mixkit_video_pool(queries, max_clips=10):
+    """Downloads real HD stock MP4 video clips from Mixkit (zero API key, zero watermarks)."""
+    found_urls = []
+    for q in queries:
+        if len(found_urls) >= max_clips * 2:
+            break
         try:
-            r = requests.get(url, headers=BROWSER_HEADERS, timeout=75)
-            ctype = r.headers.get("Content-Type", "")
-            if r.status_code == 200 and ("video" in ctype or len(r.content) > 250_000):
-                with open(out_mp4, "wb") as f:
-                    f.write(r.content)
-                # Verify valid video stream with ffprobe
-                probe = subprocess.run(
-                    ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=codec_name", "-of", "csv=p=0", out_mp4],
-                    capture_output=True,
-                    text=True,
+            slug = urllib.parse.quote_plus(q.strip())
+            r = requests.get(f"https://mixkit.co/free-stock-video/{slug}/", headers=BROWSER_HEADERS, timeout=12)
+            for link in re.findall(r'https://assets\.mixkit\.co/videos/[^"\'\s]+\.mp4', r.text):
+                if link not in found_urls:
+                    found_urls.append(link)
+        except Exception:
+            continue
+
+    downloaded = []
+    for idx, vid_url in enumerate(found_urls):
+        if len(downloaded) >= max_clips:
+            break
+        raw_mp4 = f"mixkit_raw_{idx}.mp4"
+        try:
+            vr = requests.get(vid_url, headers=BROWSER_HEADERS, timeout=20)
+            if vr.status_code == 200 and len(vr.content) > 220_000:
+                with open(raw_mp4, "wb") as f:
+                    f.write(vr.content)
+                norm_mp4 = f"clip_vid_{len(downloaded)}.mp4"
+                subprocess.run(
+                    [
+                        "ffmpeg", "-y", "-stream_loop", "-1", "-i", raw_mp4, "-t", "3.5",
+                        "-vf", "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,fps=30,format=yuv420p",
+                        "-an", "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", norm_mp4,
+                    ],
+                    check=True,
                 )
-                if probe.returncode == 0 and probe.stdout.strip():
-                    print(f"Generated real AI video clip ({vid_model}): {out_mp4}")
-                    return out_mp4
-        except Exception as e:
-            print(f"Pollinations video ({vid_model}) notice: {e}")
-    return None
+                downloaded.append(norm_mp4)
+                print(f"Downloaded real Mixkit HD video clip #{len(downloaded)}: {norm_mp4}")
+        except Exception:
+            continue
+    return downloaded
 
 
-def generate_pollinations_flux_motion_clip(prompt, out_mp4, seed):
-    """Generates a custom 1080x1920 9:16 Flux AI scene and converts it to a smooth moving clip."""
-    clean_p = f"{prompt}, photorealistic editorial photography, vibrant warm lighting, vertical 9:16, no text, no watermark"
-    encoded = urllib.parse.quote(clean_p)
-    for model in ("flux", "turbo"):
-        url = (
-            f"https://image.pollinations.ai/prompt/{encoded}"
-            f"?width=1080&height=1920&model={model}&seed={seed}&nologo=true&enhance=true"
-        )
-        for attempt in range(2):
-            try:
-                r = requests.get(url, headers=BROWSER_HEADERS, timeout=45)
-                if r.status_code == 200 and len(r.content) > 25_000:
-                    img = Image.open(io.BytesIO(r.content)).convert("RGB")
-                    jpg_path = out_mp4.replace(".mp4", ".jpg")
-                    img.save(jpg_path, quality=95)
-                    subprocess.run(
-                        [
-                            "ffmpeg", "-y", "-loop", "1", "-framerate", "30", "-t", "8", "-i", jpg_path,
-                            "-vf", "scale=1180:2098,crop=1080:1920:'min(100, n*0.6)':'min(178, n*1.0)',format=yuv420p",
-                            "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", out_mp4,
-                        ],
-                        check=True,
-                    )
-                    print(f"Generated custom 9:16 Flux AI motion clip ({model}): {out_mp4}")
-                    return out_mp4
-            except Exception as e:
-                print(f"Pollinations Flux ({model}) attempt {attempt + 1}: {e}")
-                time.sleep(2)
-    return None
-
-
-def download_wikimedia_motion_clip(query, out_mp4, used_urls):
-    """Datacenter-safe Wikimedia Commons photography fallback."""
-    for q in (query, "Andhra Pradesh", "India"):
+def fetch_distinct_photo_motion_pool(queries, needed):
+    """Fetches distinct watermark-free photos from Wikimedia + Bing and animates each into a 9:16 motion clip."""
+    candidate_urls = []
+    for q in queries:
+        if len(candidate_urls) >= needed * 3:
+            break
         try:
             r = requests.get(
                 "https://commons.wikimedia.org/w/api.php",
@@ -271,69 +254,97 @@ def download_wikimedia_motion_clip(query, out_mp4, used_urls):
                     "generator": "search",
                     "gsrsearch": f"filetype:bitmap {q}",
                     "gsrnamespace": "6",
-                    "gsrlimit": "12",
+                    "gsrlimit": "8",
                     "prop": "imageinfo",
                     "iiprop": "url",
                     "iiurlwidth": "1280",
                     "format": "json",
                 },
-                headers={"User-Agent": "NelloreDailyBot/10.0 (https://instagram.com/nelloredaily)"},
-                timeout=12,
+                headers={"User-Agent": "NelloreDailyBot/13.0 (https://instagram.com/nelloredaily)"},
+                timeout=10,
             ).json()
             for p in r.get("query", {}).get("pages", {}).values():
                 if p.get("imageinfo"):
                     u = p["imageinfo"][0].get("thumburl") or p["imageinfo"][0].get("url")
-                    if u and u not in used_urls and any(u.lower().endswith(ext) for ext in (".jpg", ".jpeg", ".png")):
-                        vr = requests.get(u, headers=BROWSER_HEADERS, timeout=12)
-                        if vr.status_code == 200 and len(vr.content) > 20_000:
-                            img = Image.open(io.BytesIO(vr.content)).convert("RGB")
-                            if img.width >= 500 and img.height >= 350:
-                                jpg_path = out_mp4.replace(".mp4", ".jpg")
-                                img.save(jpg_path, quality=95)
-                                subprocess.run(
-                                    [
-                                        "ffmpeg", "-y", "-loop", "1", "-framerate", "30", "-t", "8", "-i", jpg_path,
-                                        "-vf", "scale=1180:2098,crop=1080:1920:'min(100, n*0.6)':'min(178, n*1.0)',format=yuv420p",
-                                        "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", out_mp4,
-                                    ],
-                                    check=True,
-                                )
-                                used_urls.add(u)
-                                print(f"Created Wikimedia backup clip ({q}): {out_mp4}")
-                                return out_mp4
-        except Exception as e:
-            print(f"Wikimedia notice ({q}): {e}")
-    return None
+                    if u and u not in candidate_urls and any(u.lower().endswith(ext) for ext in (".jpg", ".jpeg", ".png")):
+                        candidate_urls.append(u)
+        except Exception:
+            pass
+
+        try:
+            q_enc = urllib.parse.quote_plus(f"{q} photography")
+            resp = requests.get(
+                f"https://www.bing.com/images/search?q={q_enc}&qft=+filterui:imagesize-large+filterui:photo-photo",
+                headers=BROWSER_HEADERS,
+                timeout=10,
+            )
+            for u in re.findall(r'murl&quot;:&quot;(https?://[^&]+?\.(?:jpg|jpeg|png))', resp.text, re.I):
+                if u not in candidate_urls:
+                    candidate_urls.append(u)
+        except Exception:
+            pass
+
+    motion_clips = []
+    motion_filters = [
+        "scale=1220:2168,crop=1080:1920:'min(140, n*1.8)':'min(248, n*3.0)',format=yuv420p",
+        "scale=1220:2168,crop=1080:1920:'max(0, 140-n*1.8)':'max(0, 248-n*3.0)',format=yuv420p",
+        "scale=1240:2204,crop=1080:1920:'min(160, n*2.0)':142,format=yuv420p",
+        "scale=1240:2204,crop=1080:1920:'max(0, 160-n*2.0)':142,format=yuv420p",
+    ]
+
+    for u in candidate_urls:
+        if len(motion_clips) >= needed:
+            break
+        try:
+            vr = requests.get(u, headers=BROWSER_HEADERS, timeout=10)
+            if vr.status_code == 200 and len(vr.content) > 22_000:
+                img = Image.open(io.BytesIO(vr.content)).convert("RGB")
+                if img.width >= 500 and img.height >= 350:
+                    idx = len(motion_clips)
+                    jpg_path = f"pool_img_{idx}.jpg"
+                    mp4_path = f"pool_mot_{idx}.mp4"
+                    img.save(jpg_path, quality=95)
+                    vf = motion_filters[idx % len(motion_filters)]
+                    subprocess.run(
+                        [
+                            "ffmpeg", "-y", "-loop", "1", "-framerate", "30", "-t", "3.5",
+                            "-i", jpg_path, "-vf", vf,
+                            "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", mp4_path,
+                        ],
+                        check=True,
+                    )
+                    motion_clips.append(mp4_path)
+                    print(f"Created distinct motion shot #{len(motion_clips)}: {mp4_path}")
+        except Exception:
+            continue
+
+    return motion_clips
 
 
-def gather_scene_videos(scenes):
-    video_paths = []
-    used_urls = set()
-    base_seed = int(time.time()) % 100000
+def gather_ten_distinct_clips(shot_queries, category="NELLORE CITY"):
+    """Collects 10 completely distinct, watermark-free clips (real HD Mixkit videos + unique motion shots)."""
+    queries = [q for q in shot_queries if q]
+    cat_defaults = {
+        "CRICKET": ["cricket match", "stadium lights", "sports crowd", "cricket ball", "celebration"],
+        "TOLLYWOOD": ["cinema projector", "movie theater", "city night lights", "festival crowd", "film camera"],
+        "JOBS ALERT": ["job interview", "office laptop", "students studying", "corporate building", "graduation"],
+        "TRENDING": ["gold jewelry", "gold coins", "indian market", "city traffic", "sunrise clouds"],
+        "NELLORE CITY": ["indian street", "city traffic", "temple bells", "river sunset", "cooking food"],
+    }
+    queries.extend(cat_defaults.get(category.upper(), cat_defaults["NELLORE CITY"]))
 
-    for idx, scene in enumerate(scenes):
-        out_mp4 = f"raw_clip_{idx}.mp4"
-        v_prompt = scene.get(
-            "visual_prompt",
-            "Vibrant sunlit street in Nellore Andhra Pradesh with yellow auto rickshaws and clear blue sky at top",
-        )
-        q_backup = scene.get("photo_query", "India city street")
-        seed = base_seed + idx * 17
+    clips = fetch_mixkit_video_pool(queries, max_clips=NUM_SHOTS)
+    if len(clips) < NUM_SHOTS:
+        needed = NUM_SHOTS - len(clips)
+        clips.extend(fetch_distinct_photo_motion_pool(queries, needed=needed))
 
-        picked = (
-            generate_pollinations_ai_video(v_prompt, out_mp4, seed)
-            or generate_pollinations_flux_motion_clip(v_prompt, out_mp4, seed)
-            or download_wikimedia_motion_clip(q_backup, out_mp4, used_urls)
-        )
+    if not clips:
+        raise RuntimeError("Could not collect any video or motion clips for the 10-shot reel.")
 
-        if picked:
-            video_paths.append(picked)
-        elif video_paths:
-            video_paths.append(video_paths[-1])
-        else:
-            raise RuntimeError("Could not generate or download scene clips.")
+    while len(clips) < NUM_SHOTS:
+        clips.append(clips[len(clips) % max(1, len(clips))])
 
-    return video_paths
+    return clips[:NUM_SHOTS]
 
 
 def load_font(size, script="telugu"):
@@ -433,13 +444,12 @@ def render_transparent_overlay(hook_te, caption_words, highlight_idx, show_hook,
     canvas.save(out_png)
 
 
-async def generate_voice_with_word_timings(scenes, out_audio="voice.mp3"):
-    full_script = " ".join(s["narration_te"].strip() for s in scenes)
-    full_script = re.sub(r"#\S+", "", full_script)
+async def generate_voice_with_word_timings(narration_te, out_audio="voice.mp3"):
+    full_script = re.sub(r"#\S+", "", narration_te or "")
     full_script = re.sub(r"[•|★☆🔥⚠️✅📍📅⏰🎬🏏💼👇]", " ", full_script)
     full_script = re.sub(r"\s+", " ", full_script).strip()
 
-    communicate = edge_tts.Communicate(full_script, "te-IN-ShrutiNeural", rate="-3%")
+    communicate = edge_tts.Communicate(full_script, "te-IN-ShrutiNeural", rate="-2%")
     word_events = []
     with open(out_audio, "wb") as audio_file:
         async for chunk in communicate.stream():
@@ -471,33 +481,54 @@ async def generate_voice_with_word_timings(scenes, out_audio="voice.mp3"):
     return total_dur, word_events
 
 
-def build_real_video_reel(scenes, total_dur, word_events, video_paths, hook_te, bgm_path=None, out_video="reel.mp4"):
-    num_scenes = len(video_paths)
-    scene_dur = total_dur / num_scenes
-    norm_clips = []
+def build_ten_shot_fast_reel(total_dur, word_events, clip_paths, hook_te, bgm_path=None, out_video="reel.mp4"):
+    """Joins 10 fast-cut clips (~1.8-2.2s per shot) with crisp cross-dissolves + live karaoke captions."""
+    num_clips = len(clip_paths)
+    trans_dur = 0.25
+    shot_dur = (total_dur + trans_dur * (num_clips - 1)) / num_clips
 
-    for idx, vpath in enumerate(video_paths):
-        norm_out = f"norm_{idx}.mp4"
-        cmd = [
-            "ffmpeg", "-y", "-stream_loop", "-1", "-i", vpath,
-            "-t", f"{scene_dur:.2f}",
-            "-vf", "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,fps=30,format=yuv420p",
-            "-an", "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", norm_out,
-        ]
-        subprocess.run(cmd, check=True)
-        norm_clips.append(norm_out)
+    trimmed = []
+    for idx, cpath in enumerate(clip_paths):
+        t_out = f"trim_{idx}.mp4"
+        subprocess.run(
+            [
+                "ffmpeg", "-y", "-stream_loop", "-1", "-i", cpath,
+                "-t", f"{shot_dur:.2f}", "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+                "-pix_fmt", "yuv420p", t_out,
+            ],
+            check=True,
+        )
+        trimmed.append(t_out)
 
-    with open("concat.txt", "w") as cf:
-        for nc in norm_clips:
-            cf.write(f"file '{nc}'\n")
+    inputs = []
+    for t_clip in trimmed:
+        inputs.extend(["-i", t_clip])
+
+    transitions = ["fade", "dissolve", "smoothleft", "smoothright", "fadeblack"]
+    filter_parts = []
+    prev = "[0:v]"
+    offset = shot_dur - trans_dur
+    for i in range(1, num_clips):
+        tr = transitions[(i - 1) % len(transitions)]
+        out_lbl = f"[v{i}]" if i < num_clips - 1 else "[vmerged]"
+        filter_parts.append(
+            f"{prev}[{i}:v]xfade=transition={tr}:duration={trans_dur:.2f}:offset={max(0.3, offset):.2f}{out_lbl}"
+        )
+        prev = out_lbl
+        offset += shot_dur - trans_dur
+
     subprocess.run(
-        ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", "concat.txt", "-c", "copy", "base_video.mp4"],
+        [
+            "ffmpeg", "-y", *inputs, "-filter_complex", ";".join(filter_parts),
+            "-map", "[vmerged]", "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+            "-pix_fmt", "yuv420p", "base_video.mp4",
+        ],
         check=True,
     )
 
     ov_fps = 10
     total_ov_frames = int(total_dur * ov_fps) + 1
-    hook_end_t = scene_dur * 2.0
+    hook_end_t = min(5.5, total_dur * 0.35)
 
     chunks = []
     for i in range(0, len(word_events), 4):
@@ -658,15 +689,15 @@ def main():
     story = generate_storyboard_with_gemini(articles)
     print("Selected Hook:", story.get("hook_te"))
 
-    video_paths = gather_scene_videos(story["scenes"])
-    total_dur, word_events = asyncio.run(generate_voice_with_word_timings(story["scenes"]))
+    cat_badge = story.get("category_badge", "NELLORE CITY")
+    clip_paths = gather_ten_distinct_clips(story["shot_queries"], category=cat_badge)
+    total_dur, word_events = asyncio.run(generate_voice_with_word_timings(story["narration_te"]))
     bgm_file = pick_bgm(story.get("bgm_mood", "emotional"))
 
-    build_real_video_reel(
-        scenes=story["scenes"],
+    build_ten_shot_fast_reel(
         total_dur=total_dur,
         word_events=word_events,
-        video_paths=video_paths,
+        clip_paths=clip_paths,
         hook_te=story.get("hook_te", "తాజా వార్త!"),
         bgm_path=bgm_file,
     )
@@ -693,7 +724,7 @@ def main():
 
     history.append(story["selected_link"])
     save_history(history)
-    print(f"Hourly Auto-Style Cinema Reel completed! (IG={ig_ok}, FB={fb_ok})")
+    print(f"Hourly 10-Shot Fast-Cut Reel completed! (IG={ig_ok}, FB={fb_ok})")
 
 
 if __name__ == "__main__":
