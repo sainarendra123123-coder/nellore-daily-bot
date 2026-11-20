@@ -658,7 +658,7 @@ def main():
     story = generate_storyboard_with_gemini(articles)
     print("Selected Hook:", story.get("hook_te"))
 
-    video_paths = gather_scene_visuals(story["scenes"])
+    video_paths = gather_scene_videos(story["scenes"])
     total_dur, word_events = asyncio.run(generate_voice_with_word_timings(story["scenes"]))
     bgm_file = pick_bgm(story.get("bgm_mood", "emotional"))
 
