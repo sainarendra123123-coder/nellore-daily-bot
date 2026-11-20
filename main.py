@@ -8,6 +8,7 @@ import urllib.parse
 import asyncio
 import random
 import subprocess
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone, timedelta
 
 import feedparser
@@ -17,16 +18,23 @@ from PIL import Image, ImageDraw, ImageFont
 from google import genai
 from google.genai import types
 
-# --- CONFIGURATION ---
+# --- REQUIRED SECRETS ---
 GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
 META_ACCESS_TOKEN = os.environ["META_ACCESS_TOKEN"]
 FB_PAGE_ID = os.environ["FB_PAGE_ID"]
 IG_USER_ID = os.environ["IG_USER_ID"]
 PREVIEW_ONLY = os.environ.get("PREVIEW_ONLY", "false").lower() == "true"
 
+# --- OPTIONAL MULTI-API VIDEO KEYS (AUTOMATIC WATERFALL) ---
+FAL_KEY = os.environ.get("FAL_KEY", "").strip()
+REPLICATE_API_TOKEN = os.environ.get("REPLICATE_API_TOKEN", "").strip()
+HF_TOKEN = os.environ.get("HF_TOKEN", "").strip()
+PEXELS_API_KEY = os.environ.get("PEXELS_API_KEY", "").strip()
+GOOGLE_CLOUD_PROJECT = os.environ.get("GOOGLE_CLOUD_PROJECT", "").strip()
+
 IST = timezone(timedelta(hours=5, minutes=30))
 HISTORY_FILE = "posted_history.json"
-NUM_SHOTS = 10
+NUM_SHOTS = 6
 
 BROWSER_HEADERS = {
     "User-Agent": (
@@ -68,6 +76,7 @@ POLITICS_BLOCKLIST = [
 ]
 
 GEMINI_MODELS = ["gemini-3.8-flash", "gemini-3.5-flash-lite"]
+EXHAUSTED_PROVIDERS = set()
 
 
 def load_history():
@@ -116,7 +125,7 @@ def fetch_latest_news(history):
     for category in ordered_cats:
         for url in CATEGORY_FEEDS[category]:
             try:
-                resp = requests.get(url, timeout=15, headers=BROWSER_HEADERS)
+                resp = requests.get(url, timeout=10, headers=BROWSER_HEADERS)
                 feed = feedparser.parse(resp.content)
                 for entry in feed.entries[:6]:
                     if not is_recent_entry(entry, max_age_hours=24):
@@ -158,18 +167,19 @@ STRICT RULES:
 3. HOOK TITLE ("hook_te"):
    - Super punchy 2-to-3 word Telugu emotional hook shown big in the upper third (like "అదిరిపోయే శుభవార్త!" or "ఒక ఎమోషన్!").
 4. NATURAL SPOKEN TELUGU VOICEOVER ("narration_te"):
-   - Write ONE smooth, engaging, conversational 50-to-60 word Telugu voiceover script (around 18-22 seconds spoken).
+   - Write ONE smooth, engaging, conversational 50-to-60 word Telugu voiceover script (around 18-20 seconds spoken).
    - Use everyday spoken Nellore Telugu (e.g., "మన నెల్లూరు వాళ్లకి...", "మన ఆటో అన్నలకు...").
-5. EXACTLY 10 DIFFERENT VISUAL SHOT QUERIES ("shot_queries" array of 10 unique strings):
-   - Provide 10 distinct 2-to-3 word English stock video/photo search phrases matching the story's scenes (e.g. ["Indian auto rickshaw", "Indian city traffic", "smiling Indian driver", "Indian rupee cash", "smartphone banking", "Nellore highway", "yellow rickshaw street", "golden hour city", "Indian commuters", "Andhra Pradesh road"]).
-   - All 10 queries MUST be different!
+5. EXACTLY 6 DIFFERENT VISUAL SHOTS ("shots" array of 6 objects):
+   - Each object MUST have:
+     a) "ai_video_prompt": Vivid 9:16 cinematic motion prompt in South India / Andhra Pradesh (e.g., "Cinematic handheld shot tracking yellow auto rickshaws driving down a sunny tree-lined avenue in Nellore India, clear blue sky at top, golden sunlight, 9:16 vertical, no text").
+     b) "stock_query": A unique 2-to-3 word English stock video/photo query (e.g., "Indian auto rickshaw", "city traffic", "cricket stadium", "gold jewelry", "office interview", "students studying"). All 6 MUST be different!
 6. METADATA:
    - "category_badge": One of "NELLORE CITY", "JOBS ALERT", "CRICKET", "TOLLYWOOD", "TRENDING".
    - "caption": Detailed, helpful Instagram & Facebook caption in Telugu + English with emojis, bullet points, source credit, and hashtags.
    - "bgm_mood": One of "emotional", "breaking", "devotional", "general".
 
 Return strictly valid JSON with keys:
-"selected_link", "category_badge", "hook_te", "narration_te", "shot_queries" (array of 10 unique strings), "caption", "bgm_mood"
+"selected_link", "category_badge", "hook_te", "narration_te", "shots" (array of 6 objects with "ai_video_prompt", "stock_query"), "caption", "bgm_mood"
 """
 
     last_err = None
@@ -188,158 +198,359 @@ Return strictly valid JSON with keys:
                 if (
                     data.get("selected_link")
                     and data.get("narration_te")
-                    and isinstance(data.get("shot_queries"), list)
-                    and len(data["shot_queries"]) >= 6
+                    and isinstance(data.get("shots"), list)
+                    and len(data["shots"]) >= 4
                 ):
                     return data
             except Exception as e:
                 last_err = e
                 print(f"Gemini ({model_name}) attempt {attempt + 1} failed: {e}")
-                time.sleep(3 * (attempt + 1))
+                time.sleep(2 * (attempt + 1))
     raise RuntimeError(f"All Gemini models failed: {last_err}")
 
 
-def fetch_mixkit_video_pool(queries, max_clips=10):
-    """Downloads real HD stock MP4 video clips from Mixkit (zero API key, zero watermarks)."""
-    found_urls = []
-    for q in queries:
-        if len(found_urls) >= max_clips * 2:
-            break
-        try:
-            slug = urllib.parse.quote_plus(q.strip())
-            r = requests.get(f"https://mixkit.co/free-stock-video/{slug}/", headers=BROWSER_HEADERS, timeout=12)
-            for link in re.findall(r'https://assets\.mixkit\.co/videos/[^"\'\s]+\.mp4', r.text):
-                if link not in found_urls:
-                    found_urls.append(link)
-        except Exception:
-            continue
+def normalize_clip_to_portrait(raw_path, out_mp4, duration=3.5):
+    subprocess.run(
+        [
+            "ffmpeg", "-y", "-stream_loop", "-1", "-i", raw_path, "-t", f"{duration:.2f}",
+            "-vf", "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,fps=30,format=yuv420p",
+            "-an", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "21", out_mp4,
+        ],
+        check=True,
+    )
+    return out_mp4
 
-    downloaded = []
-    for idx, vid_url in enumerate(found_urls):
-        if len(downloaded) >= max_clips:
-            break
-        raw_mp4 = f"mixkit_raw_{idx}.mp4"
+
+# --- PROVIDER 1: GOOGLE CLOUD VERTEX AI VEO 2 / VEO 3 ---
+def try_vertex_veo_clip(prompt, out_mp4):
+    if not GOOGLE_CLOUD_PROJECT or "vertex_veo" in EXHAUSTED_PROVIDERS:
+        return None
+    try:
+        client = genai.Client(vertexai=True, project=GOOGLE_CLOUD_PROJECT, location="us-central1")
+        op = client.models.generate_videos(
+            model="veo-2.0-generate-001",
+            prompt=prompt,
+            config=types.GenerateVideosConfig(aspect_ratio="9:16", duration_seconds=5),
+        )
+        for _ in range(18):
+            if op.done:
+                break
+            time.sleep(8)
+            op = client.operations.get(op)
+        if op.response and op.response.generated_videos:
+            vid_bytes = client.files.download(file=op.response.generated_videos[0].video)
+            raw = out_mp4.replace(".mp4", "_vtx.mp4")
+            with open(raw, "wb") as f:
+                f.write(vid_bytes)
+            print(f"[Provider 1: Vertex Veo 2] Generated clip: {out_mp4}")
+            return normalize_clip_to_portrait(raw, out_mp4)
+    except Exception as e:
+        print(f"[Provider 1: Vertex Veo 2] Exhausted/Unavailable -> switching: {e}")
+        EXHAUSTED_PROVIDERS.add("vertex_veo")
+    return None
+
+
+# --- PROVIDER 2: FAL.AI (WAN 2.1 / LTX-VIDEO) ---
+def try_fal_video_clip(prompt, out_mp4):
+    if not FAL_KEY or "fal" in EXHAUSTED_PROVIDERS:
+        return None
+    headers = {"Authorization": f"Key {FAL_KEY}", "Content-Type": "application/json"}
+    for endpoint in ("fal-ai/wan-t2v", "fal-ai/ltx-video"):
         try:
-            vr = requests.get(vid_url, headers=BROWSER_HEADERS, timeout=20)
-            if vr.status_code == 200 and len(vr.content) > 220_000:
-                with open(raw_mp4, "wb") as f:
-                    f.write(vr.content)
-                norm_mp4 = f"clip_vid_{len(downloaded)}.mp4"
+            submit = requests.post(
+                f"https://queue.fal.run/{endpoint}",
+                headers=headers,
+                json={"prompt": prompt, "aspect_ratio": "9:16"},
+                timeout=15,
+            )
+            if submit.status_code in (401, 402, 403, 429):
+                print(f"[Provider 2: fal.ai] Free credits exhausted ({submit.status_code}) -> switching.")
+                EXHAUSTED_PROVIDERS.add("fal")
+                return None
+            data = submit.json()
+            status_url = data.get("status_url")
+            response_url = data.get("response_url")
+            if not status_url or not response_url:
+                continue
+            for _ in range(18):
+                time.sleep(4)
+                st = requests.get(status_url, headers=headers, timeout=12).json()
+                if st.get("status") == "COMPLETED":
+                    res = requests.get(response_url, headers=headers, timeout=15).json()
+                    vid_url = (res.get("video") or {}).get("url")
+                    if vid_url:
+                        raw = out_mp4.replace(".mp4", "_fal.mp4")
+                        with open(raw, "wb") as f:
+                            f.write(requests.get(vid_url, timeout=20).content)
+                        print(f"[Provider 2: fal.ai ({endpoint})] Generated clip: {out_mp4}")
+                        return normalize_clip_to_portrait(raw, out_mp4)
+                elif st.get("status") == "FAILED":
+                    break
+        except Exception as e:
+            print(f"[Provider 2: fal.ai] Notice: {e}")
+    return None
+
+
+# --- PROVIDER 3: REPLICATE (WAN 2.1 T2V) ---
+def try_replicate_video_clip(prompt, out_mp4):
+    if not REPLICATE_API_TOKEN or "replicate" in EXHAUSTED_PROVIDERS:
+        return None
+    headers = {"Authorization": f"Bearer {REPLICATE_API_TOKEN}", "Content-Type": "application/json"}
+    try:
+        r = requests.post(
+            "https://api.replicate.com/v1/models/wan-video/wan-2.1-t2v-480p/predictions",
+            headers=headers,
+            json={"input": {"prompt": prompt, "aspect_ratio": "9:16"}},
+            timeout=15,
+        )
+        if r.status_code in (401, 402, 403, 429):
+            print(f"[Provider 3: Replicate] Free credits exhausted ({r.status_code}) -> switching.")
+            EXHAUSTED_PROVIDERS.add("replicate")
+            return None
+        get_url = (r.json().get("urls") or {}).get("get")
+        if not get_url:
+            return None
+        for _ in range(18):
+            time.sleep(5)
+            st = requests.get(get_url, headers=headers, timeout=12).json()
+            if st.get("status") == "succeeded":
+                out_url = st.get("output")
+                if isinstance(out_url, list):
+                    out_url = out_url[0]
+                if out_url:
+                    raw = out_mp4.replace(".mp4", "_rep.mp4")
+                    with open(raw, "wb") as f:
+                        f.write(requests.get(out_url, timeout=20).content)
+                    print(f"[Provider 3: Replicate] Generated clip: {out_mp4}")
+                    return normalize_clip_to_portrait(raw, out_mp4)
+            elif st.get("status") in ("failed", "canceled"):
+                break
+    except Exception as e:
+        print(f"[Provider 3: Replicate] Notice: {e}")
+    return None
+
+
+# --- PROVIDER 4: HUGGING FACE INFERENCE API (WAN 2.1 / LTX-VIDEO) ---
+def try_huggingface_video_clip(prompt, out_mp4):
+    if not HF_TOKEN or "huggingface" in EXHAUSTED_PROVIDERS:
+        return None
+    headers = {"Authorization": f"Bearer {HF_TOKEN}"}
+    for model_id in ("Wan-AI/Wan2.1-T2V-1.3B", "Lightricks/LTX-Video"):
+        try:
+            r = requests.post(
+                f"https://api-inference.huggingface.co/models/{model_id}",
+                headers=headers,
+                json={"inputs": prompt},
+                timeout=45,
+            )
+            if r.status_code in (401, 402, 403, 429):
+                print(f"[Provider 4: Hugging Face] Free quota exhausted ({r.status_code}) -> switching.")
+                EXHAUSTED_PROVIDERS.add("huggingface")
+                return None
+            if r.status_code == 200 and len(r.content) > 150_000:
+                raw = out_mp4.replace(".mp4", "_hf.mp4")
+                with open(raw, "wb") as f:
+                    f.write(r.content)
+                print(f"[Provider 4: Hugging Face ({model_id})] Generated clip: {out_mp4}")
+                return normalize_clip_to_portrait(raw, out_mp4)
+        except Exception as e:
+            print(f"[Provider 4: Hugging Face] Notice: {e}")
+    return None
+
+
+# --- PROVIDER 5: PEXELS FREE PORTRAIT HD VIDEO API ---
+def try_pexels_video_clip(query, out_mp4, used_urls):
+    if not PEXELS_API_KEY or "pexels" in EXHAUSTED_PROVIDERS:
+        return None
+    try:
+        r = requests.get(
+            "https://api.pexels.com/videos/search",
+            headers={"Authorization": PEXELS_API_KEY},
+            params={"query": query, "orientation": "portrait", "size": "medium", "per_page": 8},
+            timeout=10,
+        )
+        if r.status_code in (401, 403, 429):
+            print(f"[Provider 5: Pexels] Rate/quota limit ({r.status_code}) -> switching.")
+            EXHAUSTED_PROVIDERS.add("pexels")
+            return None
+        for v in r.json().get("videos", []):
+            files = sorted(v.get("video_files", []), key=lambda x: x.get("width", 0), reverse=True)
+            for vf in files:
+                link = vf.get("link", "")
+                if link and link not in used_urls and vf.get("file_type") == "video/mp4" and vf.get("width", 0) <= 1920:
+                    raw = out_mp4.replace(".mp4", "_px.mp4")
+                    vr = requests.get(link, timeout=15)
+                    if vr.status_code == 200 and len(vr.content) > 200_000:
+                        with open(raw, "wb") as f:
+                            f.write(vr.content)
+                        used_urls.add(link)
+                        print(f"[Provider 5: Pexels Portrait HD] Downloaded ({query}): {out_mp4}")
+                        return normalize_clip_to_portrait(raw, out_mp4)
+    except Exception as e:
+        print(f"[Provider 5: Pexels] Notice: {e}")
+    return None
+
+
+# --- PROVIDER 6: PARALLEL ZERO-KEY MIXKIT HD VIDEOS + WIKIMEDIA/BING MOTION FALLBACK ---
+def _download_and_norm_mixkit(args):
+    idx, link = args
+    raw = f"fb_mix_{idx}.mp4"
+    out_mp4 = f"fb_clip_{idx}.mp4"
+    try:
+        vr = requests.get(link, headers=BROWSER_HEADERS, timeout=12)
+        if vr.status_code == 200 and len(vr.content) > 220_000:
+            with open(raw, "wb") as f:
+                f.write(vr.content)
+            return normalize_clip_to_portrait(raw, out_mp4)
+    except Exception:
+        pass
+    return None
+
+
+def _download_and_norm_photo(args):
+    idx, u, motion_filter = args
+    jpg_p = f"fb_img_{idx}.jpg"
+    mp4_p = f"fb_mot_{idx}.mp4"
+    try:
+        vr = requests.get(u, headers=BROWSER_HEADERS, timeout=8)
+        if vr.status_code == 200 and len(vr.content) > 22_000:
+            img = Image.open(io.BytesIO(vr.content)).convert("RGB")
+            if img.width >= 500 and img.height >= 350:
+                img.save(jpg_p, quality=92)
                 subprocess.run(
                     [
-                        "ffmpeg", "-y", "-stream_loop", "-1", "-i", raw_mp4, "-t", "3.5",
-                        "-vf", "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,fps=30,format=yuv420p",
-                        "-an", "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", norm_mp4,
+                        "ffmpeg", "-y", "-loop", "1", "-framerate", "30", "-t", "3.5",
+                        "-i", jpg_p, "-vf", motion_filter,
+                        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "21", mp4_p,
                     ],
                     check=True,
                 )
-                downloaded.append(norm_mp4)
-                print(f"Downloaded real Mixkit HD video clip #{len(downloaded)}: {norm_mp4}")
-        except Exception:
-            continue
-    return downloaded
+                return mp4_p
+    except Exception:
+        pass
+    return None
 
 
-def fetch_distinct_photo_motion_pool(queries, needed):
-    """Fetches distinct watermark-free photos from Wikimedia + Bing and animates each into a 9:16 motion clip."""
-    candidate_urls = []
-    for q in queries:
-        if len(candidate_urls) >= needed * 3:
-            break
+def gather_zero_key_fallback_clips(queries, needed, used_urls):
+    clips = []
+    candidate_vid_links = []
+    for q in queries[:4]:
         try:
-            r = requests.get(
-                "https://commons.wikimedia.org/w/api.php",
-                params={
-                    "action": "query",
-                    "generator": "search",
-                    "gsrsearch": f"filetype:bitmap {q}",
-                    "gsrnamespace": "6",
-                    "gsrlimit": "8",
-                    "prop": "imageinfo",
-                    "iiprop": "url",
-                    "iiurlwidth": "1280",
-                    "format": "json",
-                },
-                headers={"User-Agent": "NelloreDailyBot/13.0 (https://instagram.com/nelloredaily)"},
-                timeout=10,
-            ).json()
-            for p in r.get("query", {}).get("pages", {}).values():
-                if p.get("imageinfo"):
-                    u = p["imageinfo"][0].get("thumburl") or p["imageinfo"][0].get("url")
-                    if u and u not in candidate_urls and any(u.lower().endswith(ext) for ext in (".jpg", ".jpeg", ".png")):
-                        candidate_urls.append(u)
-        except Exception:
-            pass
-
-        try:
-            q_enc = urllib.parse.quote_plus(f"{q} photography")
-            resp = requests.get(
-                f"https://www.bing.com/images/search?q={q_enc}&qft=+filterui:imagesize-large+filterui:photo-photo",
-                headers=BROWSER_HEADERS,
-                timeout=10,
-            )
-            for u in re.findall(r'murl&quot;:&quot;(https?://[^&]+?\.(?:jpg|jpeg|png))', resp.text, re.I):
-                if u not in candidate_urls:
-                    candidate_urls.append(u)
-        except Exception:
-            pass
-
-    motion_clips = []
-    motion_filters = [
-        "scale=1220:2168,crop=1080:1920:'min(140, n*1.8)':'min(248, n*3.0)',format=yuv420p",
-        "scale=1220:2168,crop=1080:1920:'max(0, 140-n*1.8)':'max(0, 248-n*3.0)',format=yuv420p",
-        "scale=1240:2204,crop=1080:1920:'min(160, n*2.0)':142,format=yuv420p",
-        "scale=1240:2204,crop=1080:1920:'max(0, 160-n*2.0)':142,format=yuv420p",
-    ]
-
-    for u in candidate_urls:
-        if len(motion_clips) >= needed:
-            break
-        try:
-            vr = requests.get(u, headers=BROWSER_HEADERS, timeout=10)
-            if vr.status_code == 200 and len(vr.content) > 22_000:
-                img = Image.open(io.BytesIO(vr.content)).convert("RGB")
-                if img.width >= 500 and img.height >= 350:
-                    idx = len(motion_clips)
-                    jpg_path = f"pool_img_{idx}.jpg"
-                    mp4_path = f"pool_mot_{idx}.mp4"
-                    img.save(jpg_path, quality=95)
-                    vf = motion_filters[idx % len(motion_filters)]
-                    subprocess.run(
-                        [
-                            "ffmpeg", "-y", "-loop", "1", "-framerate", "30", "-t", "3.5",
-                            "-i", jpg_path, "-vf", vf,
-                            "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", mp4_path,
-                        ],
-                        check=True,
-                    )
-                    motion_clips.append(mp4_path)
-                    print(f"Created distinct motion shot #{len(motion_clips)}: {mp4_path}")
+            slug = urllib.parse.quote_plus(q.strip())
+            r = requests.get(f"https://mixkit.co/free-stock-video/{slug}/", headers=BROWSER_HEADERS, timeout=8)
+            for link in re.findall(r'https://assets\.mixkit\.co/videos/[^"\'\s]+\.mp4', r.text):
+                if link not in used_urls and link not in candidate_vid_links:
+                    candidate_vid_links.append(link)
         except Exception:
             continue
 
-    return motion_clips
+    if candidate_vid_links:
+        with ThreadPoolExecutor(max_workers=4) as ex:
+            tasks = [(i, link) for i, link in enumerate(candidate_vid_links[: needed + 2])]
+            for res in as_completed([ex.submit(_download_and_norm_mixkit, t) for t in tasks]):
+                mp4 = res.result()
+                if mp4 and len(clips) < needed:
+                    clips.append(mp4)
+                    print(f"[Provider 6A: Mixkit HD] Ready: {mp4}")
+
+    if len(clips) < needed:
+        rem = needed - len(clips)
+        candidate_imgs = []
+        for q in queries:
+            if len(candidate_imgs) >= rem * 3:
+                break
+            try:
+                r = requests.get(
+                    "https://commons.wikimedia.org/w/api.php",
+                    params={
+                        "action": "query",
+                        "generator": "search",
+                        "gsrsearch": f"filetype:bitmap {q}",
+                        "gsrnamespace": "6",
+                        "gsrlimit": "6",
+                        "prop": "imageinfo",
+                        "iiprop": "url",
+                        "iiurlwidth": "1280",
+                        "format": "json",
+                    },
+                    headers={"User-Agent": "NelloreDailyBot/15.0 (https://instagram.com/nelloredaily)"},
+                    timeout=8,
+                ).json()
+                for p in r.get("query", {}).get("pages", {}).values():
+                    if p.get("imageinfo"):
+                        u = p["imageinfo"][0].get("thumburl") or p["imageinfo"][0].get("url")
+                        if u and u not in used_urls and u not in candidate_imgs and any(u.lower().endswith(ext) for ext in (".jpg", ".jpeg", ".png")):
+                            candidate_imgs.append(u)
+            except Exception:
+                pass
+            try:
+                q_enc = urllib.parse.quote_plus(f"{q} photography")
+                resp = requests.get(
+                    f"https://www.bing.com/images/search?q={q_enc}&qft=+filterui:imagesize-large+filterui:photo-photo",
+                    headers=BROWSER_HEADERS,
+                    timeout=8,
+                )
+                for u in re.findall(r'murl&quot;:&quot;(https?://[^&]+?\.(?:jpg|jpeg|png))', resp.text, re.I):
+                    if u not in used_urls and u not in candidate_imgs:
+                        candidate_imgs.append(u)
+            except Exception:
+                pass
+
+        motion_filters = [
+            "scale=1220:2168,crop=1080:1920:'min(140, n*1.8)':'min(248, n*3.0)',format=yuv420p",
+            "scale=1220:2168,crop=1080:1920:'max(0, 140-n*1.8)':'max(0, 248-n*3.0)',format=yuv420p",
+            "scale=1240:2204,crop=1080:1920:'min(160, n*2.0)':142,format=yuv420p",
+            "scale=1240:2204,crop=1080:1920:'max(0, 160-n*2.0)':142,format=yuv420p",
+        ]
+        with ThreadPoolExecutor(max_workers=4) as ex:
+            tasks = [
+                (i, u, motion_filters[i % len(motion_filters)])
+                for i, u in enumerate(candidate_imgs[: rem + 4])
+            ]
+            for res in as_completed([ex.submit(_download_and_norm_photo, t) for t in tasks]):
+                mp4 = res.result()
+                if mp4 and len(clips) < needed:
+                    clips.append(mp4)
+                    print(f"[Provider 6B: Motion Photo] Ready: {mp4}")
+
+    return clips
 
 
-def gather_ten_distinct_clips(shot_queries, category="NELLORE CITY"):
-    """Collects 10 completely distinct, watermark-free clips (real HD Mixkit videos + unique motion shots)."""
-    queries = [q for q in shot_queries if q]
+def gather_six_waterfall_clips(shots, category="NELLORE CITY"):
+    """Chains all available video APIs in waterfall order until 6 distinct clips are collected."""
+    clips = []
+    used_urls = set()
     cat_defaults = {
-        "CRICKET": ["cricket match", "stadium lights", "sports crowd", "cricket ball", "celebration"],
-        "TOLLYWOOD": ["cinema projector", "movie theater", "city night lights", "festival crowd", "film camera"],
-        "JOBS ALERT": ["job interview", "office laptop", "students studying", "corporate building", "graduation"],
-        "TRENDING": ["gold jewelry", "gold coins", "indian market", "city traffic", "sunrise clouds"],
-        "NELLORE CITY": ["indian street", "city traffic", "temple bells", "river sunset", "cooking food"],
+        "CRICKET": ["cricket match", "stadium lights", "sports crowd", "cricket ball"],
+        "TOLLYWOOD": ["cinema projector", "movie theater", "city night lights", "festival crowd"],
+        "JOBS ALERT": ["job interview", "office laptop", "students studying", "corporate building"],
+        "TRENDING": ["gold jewelry", "gold coins", "indian market", "city traffic"],
+        "NELLORE CITY": ["indian street", "city traffic", "temple bells", "river sunset"],
     }
-    queries.extend(cat_defaults.get(category.upper(), cat_defaults["NELLORE CITY"]))
+    extra_queries = cat_defaults.get(category.upper(), cat_defaults["NELLORE CITY"])
 
-    clips = fetch_mixkit_video_pool(queries, max_clips=NUM_SHOTS)
+    for idx in range(NUM_SHOTS):
+        shot = shots[idx] if idx < len(shots) else {}
+        ai_prompt = shot.get("ai_video_prompt", "Cinematic sunlit street in South India with natural motion, 9:16 vertical")
+        stock_q = shot.get("stock_query", extra_queries[idx % len(extra_queries)])
+        out_mp4 = f"final_shot_{idx}.mp4"
+
+        picked = (
+            try_vertex_veo_clip(ai_prompt, out_mp4)
+            or try_fal_video_clip(ai_prompt, out_mp4)
+            or try_replicate_video_clip(ai_prompt, out_mp4)
+            or try_huggingface_video_clip(ai_prompt, out_mp4)
+            or try_pexels_video_clip(stock_q, out_mp4, used_urls)
+        )
+        if picked:
+            clips.append(picked)
+
     if len(clips) < NUM_SHOTS:
-        needed = NUM_SHOTS - len(clips)
-        clips.extend(fetch_distinct_photo_motion_pool(queries, needed=needed))
+        all_queries = [s.get("stock_query", "") for s in shots if s.get("stock_query")] + extra_queries
+        clips.extend(gather_zero_key_fallback_clips(all_queries, NUM_SHOTS - len(clips), used_urls))
 
     if not clips:
-        raise RuntimeError("Could not collect any video or motion clips for the 10-shot reel.")
+        raise RuntimeError("All video providers and fallbacks failed to produce clips.")
 
     while len(clips) < NUM_SHOTS:
         clips.append(clips[len(clips) % max(1, len(clips))])
@@ -387,12 +598,10 @@ def render_transparent_overlay(hook_te, caption_words, highlight_idx, show_hook,
         alpha = int(150 * prog)
         draw.line([(0, y), (1080, y)], fill=(0, 0, 0, alpha))
 
-    # 1. Top-Left Minimalist Watermark ('• NELLORE DAILY')
     wm_font = load_font(25, "english")
     draw.ellipse([72, 86, 86, 100], fill=(250, 204, 21, 245))
     draw.text((98, 79), "NELLORE DAILY", fill=(255, 255, 255, 240), font=wm_font)
 
-    # 2. Big Bold Telugu Hook Headline in Upper Third
     if show_hook and hook_te:
         hook_font = load_font(74, "telugu")
         words = hook_te.split()
@@ -416,7 +625,6 @@ def render_transparent_overlay(hook_te, caption_words, highlight_idx, show_hook,
             draw_shaped_text(draw, (hx, hy), line, hook_font, (255, 255, 255, 255))
             hy += 96
 
-    # 3. Bottom Translucent Pill with Live Word-by-Word Yellow Highlight
     if caption_words:
         cap_font = load_font(44, "telugu")
         space_w = draw.textbbox((0, 0), " ", font=cap_font)[2]
@@ -481,52 +689,26 @@ async def generate_voice_with_word_timings(narration_te, out_audio="voice.mp3"):
     return total_dur, word_events
 
 
-def build_ten_shot_fast_reel(total_dur, word_events, clip_paths, hook_te, bgm_path=None, out_video="reel.mp4"):
-    """Joins 10 fast-cut clips (~1.8-2.2s per shot) with crisp cross-dissolves + live karaoke captions."""
+def build_fast_reel(total_dur, word_events, clip_paths, hook_te, bgm_path=None, out_video="reel.mp4"):
+    """Instant single-pass concat of 6 distinct clips + live karaoke captions (~15s total render)."""
     num_clips = len(clip_paths)
-    trans_dur = 0.25
-    shot_dur = (total_dur + trans_dur * (num_clips - 1)) / num_clips
+    shot_dur = total_dur / num_clips
 
-    trimmed = []
-    for idx, cpath in enumerate(clip_paths):
-        t_out = f"trim_{idx}.mp4"
-        subprocess.run(
-            [
-                "ffmpeg", "-y", "-stream_loop", "-1", "-i", cpath,
-                "-t", f"{shot_dur:.2f}", "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
-                "-pix_fmt", "yuv420p", t_out,
-            ],
-            check=True,
-        )
-        trimmed.append(t_out)
-
-    inputs = []
-    for t_clip in trimmed:
-        inputs.extend(["-i", t_clip])
-
-    transitions = ["fade", "dissolve", "smoothleft", "smoothright", "fadeblack"]
-    filter_parts = []
-    prev = "[0:v]"
-    offset = shot_dur - trans_dur
-    for i in range(1, num_clips):
-        tr = transitions[(i - 1) % len(transitions)]
-        out_lbl = f"[v{i}]" if i < num_clips - 1 else "[vmerged]"
-        filter_parts.append(
-            f"{prev}[{i}:v]xfade=transition={tr}:duration={trans_dur:.2f}:offset={max(0.3, offset):.2f}{out_lbl}"
-        )
-        prev = out_lbl
-        offset += shot_dur - trans_dur
+    with open("concat.txt", "w") as cf:
+        for cpath in clip_paths:
+            cf.write(f"file '{os.path.abspath(cpath)}'\n")
+            cf.write(f"duration {shot_dur:.2f}\n")
 
     subprocess.run(
         [
-            "ffmpeg", "-y", *inputs, "-filter_complex", ";".join(filter_parts),
-            "-map", "[vmerged]", "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+            "ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", "concat.txt",
+            "-t", f"{total_dur:.2f}", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "21",
             "-pix_fmt", "yuv420p", "base_video.mp4",
         ],
         check=True,
     )
 
-    ov_fps = 10
+    ov_fps = 8
     total_ov_frames = int(total_dur * ov_fps) + 1
     hook_end_t = min(5.5, total_dur * 0.35)
 
@@ -574,7 +756,7 @@ def build_ten_shot_fast_reel(total_dur, word_events, clip_paths, hook_te, bgm_pa
             "[0:v][1:v]overlay=0:0:shortest=1[vout];[3:a]volume=0.14[bgm];[2:a][bgm]amix=inputs=2:duration=first:dropout_transition=2[aout]",
             "-map", "[vout]", "-map", "[aout]",
             "-c:v", "libx264", "-profile:v", "high", "-level", "4.1",
-            "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
+            "-preset", "ultrafast", "-crf", "21", "-pix_fmt", "yuv420p",
             "-c:a", "aac", "-ar", "44100", "-ac", "2", "-b:a", "192k",
             "-movflags", "+faststart", "-shortest", out_video,
         ]
@@ -587,7 +769,7 @@ def build_ten_shot_fast_reel(total_dur, word_events, clip_paths, hook_te, bgm_pa
             "-filter_complex", "[0:v][1:v]overlay=0:0:shortest=1[vout]",
             "-map", "[vout]", "-map", "2:a",
             "-c:v", "libx264", "-profile:v", "high", "-level", "4.1",
-            "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
+            "-preset", "ultrafast", "-crf", "21", "-pix_fmt", "yuv420p",
             "-c:a", "aac", "-ar", "44100", "-ac", "2", "-b:a", "192k",
             "-movflags", "+faststart", "-shortest", out_video,
         ]
@@ -690,11 +872,11 @@ def main():
     print("Selected Hook:", story.get("hook_te"))
 
     cat_badge = story.get("category_badge", "NELLORE CITY")
-    clip_paths = gather_ten_distinct_clips(story["shot_queries"], category=cat_badge)
+    clip_paths = gather_six_waterfall_clips(story["shots"], category=cat_badge)
     total_dur, word_events = asyncio.run(generate_voice_with_word_timings(story["narration_te"]))
     bgm_file = pick_bgm(story.get("bgm_mood", "emotional"))
 
-    build_ten_shot_fast_reel(
+    build_fast_reel(
         total_dur=total_dur,
         word_events=word_events,
         clip_paths=clip_paths,
@@ -724,7 +906,7 @@ def main():
 
     history.append(story["selected_link"])
     save_history(history)
-    print(f"Hourly 10-Shot Fast-Cut Reel completed! (IG={ig_ok}, FB={fb_ok})")
+    print(f"Hourly Fast Multi-API Reel completed! (IG={ig_ok}, FB={fb_ok})")
 
 
 if __name__ == "__main__":
