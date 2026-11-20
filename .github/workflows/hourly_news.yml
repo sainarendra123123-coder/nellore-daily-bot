@@ -2,7 +2,7 @@ name: Nellore Daily News Reel Bot
 
 on:
   schedule:
-    - cron: '5 * * * *'
+  - cron: '5 * * * *'
   workflow_dispatch:
     inputs:
       preview_only:
