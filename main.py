@@ -14,7 +14,7 @@ from datetime import datetime, timezone, timedelta
 import feedparser
 import requests
 import edge_tts
-from PIL import Image, ImageDraw, ImageFont, ImageEnhance, ImageFilter
+from PIL import Image, ImageDraw, ImageFont, ImageEnhance
 from google import genai
 from google.genai import types
 
@@ -41,15 +41,15 @@ CATEGORY_FEEDS = {
     "NELLORE CITY": [
         "https://www.eenadu.net/rss/andhra-pradesh.xml",
         "https://www.sakshi.com/rss/andhra-pradesh",
-        "https://news.google.com/rss/search?q=Nellore+city+OR+%E0%B0%A8%E0%B1%86%E0%B0%B2%E0%B1%8D%E0%B0%B2%E0%B1%82%E0%B0%B0%E0%B1%81+when:1d&hl=te&gl=IN&ceid=IN:te",
+        "https://news.google.com/rss/search?q=Nellore+OR+%E0%B0%A8%E0%B1%86%E0%B0%B2%E0%B1%8D%E0%B0%B2%E0%B1%82%E0%B0%B0%E0%B1%81+when:1d&hl=te&gl=IN&ceid=IN:te",
     ],
     "JOBS ALERT": [
-        "https://news.google.com/rss/search?q=APPSC+OR+DSC+OR+Andhra+Pradesh+jobs+notification+when:1d&hl=te&gl=IN&ceid=IN:te",
+        "https://news.google.com/rss/search?q=APPSC+OR+DSC+OR+Andhra+Pradesh+jobs+when:1d&hl=te&gl=IN&ceid=IN:te",
         "https://news.google.com/rss/search?q=Andhra+Pradesh+govt+jobs+notification+when:1d&hl=en-IN&gl=IN&ceid=IN:en",
     ],
     "CRICKET": [
         "https://www.espncricinfo.com/rss/content/story/feeds/0.xml",
-        "https://news.google.com/rss/search?q=India+cricket+OR+IPL+Telugu+when:1d&hl=te&gl=IN&ceid=IN:te",
+        "https://news.google.com/rss/search?q=India+cricket+OR+IPL+when:1d&hl=te&gl=IN&ceid=IN:te",
     ],
     "TOLLYWOOD": [
         "https://telugu.samayam.com/entertainment/rssfeeds/48332856.cms",
@@ -68,8 +68,8 @@ POLITICS_BLOCKLIST = [
     "bjp", "congress", "mla", "mp", "minister", "assembly", "election", "politics",
 ]
 
-GEMINI_MODELS = ["gemini-3.5-flash", "gemini-3.5-flash-lite"]
-XFADE_TRANSITIONS = ["smoothleft", "dissolve", "wipeleft", "slideright"]
+GEMINI_MODELS = ["gemini-3.8-flash", "gemini-3.5-flash-lite"]
+XFADE_TRANSITIONS = ["dissolve", "fade", "smoothleft", "smoothright"]
 
 
 def load_history():
@@ -108,21 +108,6 @@ def is_recent_entry(entry, max_age_hours=24):
         return True
 
 
-def extract_rss_media(entry):
-    for key in ("media_content", "media_thumbnail"):
-        media = entry.get(key)
-        if isinstance(media, list) and media and media[0].get("url"):
-            return media[0]["url"]
-    for link in entry.get("links", []):
-        if "image" in link.get("type", "") and link.get("href"):
-            return link["href"]
-    raw_desc = entry.get("summary", "") or entry.get("description", "")
-    m = re.search(r'<img[^>]+src=["\']([^"\']+)["\']', raw_desc, re.I)
-    if m and m.group(1).startswith("http"):
-        return m.group(1)
-    return ""
-
-
 def fetch_latest_news(history):
     articles = []
     seen_links = set(history)
@@ -152,7 +137,6 @@ def fetch_latest_news(history):
                         "summary": summary[:350],
                         "published": entry.get("published", ""),
                         "link": link,
-                        "rss_image": extract_rss_media(entry),
                     })
             except Exception as e:
                 print(f"Feed warning ({category}): {e}")
@@ -165,29 +149,29 @@ def generate_storyboard_with_gemini(articles):
     preferred_cat = articles[0]["category"] if articles else "NELLORE CITY"
 
     prompt = f"""
-You are the lead Telugu visual storyteller for 'Nellore Daily'.
+You are the creative director for 'Nellore Daily' on Instagram Reels.
 Current exact date & time: {now_ist}.
 Review these fresh news items from today:
 {json.dumps(articles, ensure_ascii=False)}
 
 STRICT RULES:
 1. ZERO POLITICS: Never pick political parties, leaders, speeches, or elections.
-2. TOPIC: Prefer '{preferred_cat}' if a strong fresh story is available; otherwise pick the best fresh story on Nellore city updates/offers, AP/Nellore Jobs, Cricket, Tollywood, or Gold/Silver & trending facts.
-3. NATURAL SPOKEN TELUGU:
-   - Write one smooth, conversational 45-to-55 word Telugu voiceover split into 4 scenes.
-   - Use everyday spoken Telugu (friendly Nellore tone, simple clear words, no stiff dubbing Telugu).
-   - Keep each scene's "subtitle_te" SHORT (4 to 7 Telugu words max) so it looks crisp and readable on mobile.
-4. SPECIFIC PHOTO SEARCH QUERIES FOR EACH SCENE:
-   - For each of the 4 scenes, give a clear 2-to-4 word English photo search phrase ("image_query") that directly matches that scene's visual (e.g., "Indian cricket stadium match", "Telugu cinema movie theatre", "Gold jewellery showroom India", "Nellore city road traffic", "Indian students exam hall").
-   - Make all 4 "image_query" strings DIFFERENT so each scene shows a distinct visual!
-5. METADATA:
-   - "category_badge": One of "NELLORE CITY", "JOBS ALERT", "CRICKET", "TOLLYWOOD", "TRENDING".
-   - "headline_te": Short 4-to-6 word Telugu headline.
-   - "caption": Engaging Instagram & Facebook caption in Telugu + English with source credit and hashtags.
-   - "bgm_mood": One of "breaking", "emotional", "devotional", "general".
+2. TOPIC: Prefer '{preferred_cat}' if a strong fresh story is available; otherwise pick the best fresh story on Nellore city updates/schemes/food, AP/Nellore Jobs, Cricket, Tollywood, or Gold/Silver & trending facts.
+3. HOOK TITLE ("hook_te"):
+   - Write a super punchy 2-to-3 word Telugu emotional hook that appears big in the upper third of the reel (just like "అదిరిపోయే శుభవార్త!" or "ఒక ఎమోషన్!").
+4. NATURAL SPOKEN TELUGU VOICEOVER:
+   - Write a warm, conversational 45-to-55 word Telugu script split into 4 scenes.
+   - Use everyday spoken Nellore Telugu (e.g., "మన నెల్లూరు వాళ్లకి...", "మన ఆటో అన్నలకు అదిరిపోయే శుభవార్త...").
+5. CINEMATIC 9:16 VERTICAL VISUAL PROMPTS FOR EACH OF THE 4 SCENES:
+   - For each scene, write:
+     a) "visual_prompt": A vivid, realistic, colorful 9:16 vertical photography/illustration prompt set in South India / Andhra Pradesh (e.g., "Vibrant sunlit street in Nellore Andhra Pradesh with yellow auto rickshaws driving down a tree-lined avenue, clear blue sky at top third, warm cinematic golden hour photography, 9:16 vertical"). Always keep the top third clean sky/open space so white hook text stands out clearly!
+     b) "photo_query": A 2-to-3 word English fallback search query (e.g., "Nellore street India", "Indian cricket stadium", "gold jewellery India").
+6. METADATA:
+   - "caption": Detailed, helpful Instagram & Facebook caption in Telugu + English with emojis, bullet points, source credit, and hashtags.
+   - "bgm_mood": One of "emotional", "breaking", "devotional", "general".
 
 Return strictly valid JSON with keys:
-"selected_link", "category_badge", "headline_te", "scenes" (array of 4 objects with "narration_te", "subtitle_te", "image_query"), "caption", "bgm_mood"
+"selected_link", "hook_te", "scenes" (array of 4 objects with "narration_te", "visual_prompt", "photo_query"), "caption", "bgm_mood"
 """
 
     last_err = None
@@ -199,7 +183,7 @@ Return strictly valid JSON with keys:
                     contents=prompt,
                     config=types.GenerateContentConfig(
                         response_mime_type="application/json",
-                        temperature=0.35,
+                        temperature=0.4,
                     ),
                 )
                 data = json.loads(response.text)
@@ -212,74 +196,37 @@ Return strictly valid JSON with keys:
             except Exception as e:
                 last_err = e
                 print(f"Gemini ({model_name}) attempt {attempt + 1} failed: {e}")
-                time.sleep(4 * (attempt + 1))
+                time.sleep(3 * (attempt + 1))
     raise RuntimeError(f"All Gemini models failed: {last_err}")
 
 
-def resolve_real_article_url(url):
-    """Unwraps Google News RSS redirect URLs to the real publisher article URL."""
-    if not url or "news.google.com" not in url:
-        return url
+def generate_ai_vertical_visual(prompt, out_path):
+    """Generates a custom 9:16 vertical visual matching the Auto Drivers / Chepala Pulusu reel style."""
+    client = genai.Client(api_key=GEMINI_API_KEY)
     try:
-        # 1. Try decoding base64 token embedded in Google News article URL
-        parsed = urllib.parse.urlparse(url)
-        parts = [p for p in parsed.path.split("/") if p]
-        if parts:
-            token = parts[-1]
-            padded = token + "=" * ((4 - len(token) % 4) % 4)
-            raw = base64.urlsafe_b64decode(padded)
-            m = re.search(rb"https?://[^\x00-\x1f\x7f\"'<>]+", raw)
-            if m:
-                decoded_url = m.group(0).decode("utf-8", errors="ignore")
-                if "google.com" not in decoded_url:
-                    return decoded_url
-
-        # 2. Fallback: parse canonical/meta refresh link from Google News page
-        r = requests.get(url, headers=BROWSER_HEADERS, timeout=10, allow_redirects=True)
-        if "news.google.com" not in r.url:
-            return r.url
-        m2 = re.search(r'data-n-au=["\'](https?://[^"\']+)["\']', r.text)
-        if m2:
-            return html.unescape(m2.group(1))
+        res = client.models.generate_images(
+            model="imagen-3.0-generate-002",
+            prompt=prompt,
+            config=types.GenerateImagesConfig(
+                number_of_images=1,
+                aspect_ratio="9:16",
+                output_mime_type="image/jpeg",
+            ),
+        )
+        if res.generated_images:
+            img_bytes = res.generated_images[0].image.image_bytes
+            img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+            img.save(out_path, quality=95)
+            print(f"Generated 9:16 AI visual: {out_path}")
+            return out_path
     except Exception as e:
-        print(f"Google News URL decode warning: {e}")
-    return url
+        print(f"Imagen fallback notice: {e}")
+    return None
 
 
-def extract_article_og_image(article_url):
-    """Resolves the publisher article and extracts its real cover photo (og:image)."""
-    real_url = resolve_real_article_url(article_url)
-    if not real_url or "news.google.com" in real_url:
-        return ""
-    try:
-        r = requests.get(real_url, headers=BROWSER_HEADERS, timeout=12, allow_redirects=True)
-        html_text = r.text
-        patterns = [
-            r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']',
-            r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']og:image["\']',
-            r'<meta[^>]+name=["\']twitter:image["\'][^>]+content=["\']([^"\']+)["\']',
-            r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+name=["\']twitter:image["\']',
-        ]
-        for pat in patterns:
-            m = re.search(pat, html_text, re.I)
-            if m:
-                img_url = html.unescape(m.group(1)).strip()
-                if img_url.startswith("//"):
-                    img_url = "https:" + img_url
-                bad_domains = ("google.com", "gstatic.com", "googleusercontent.com", "logo", "favicon")
-                if img_url.startswith("http") and not any(b in img_url.lower() for b in bad_domains):
-                    return img_url
-    except Exception as e:
-        print(f"og:image extraction warning: {e}")
-    return ""
-
-
-def search_web_images(query, max_results=14):
-    """Searches Wikimedia Commons + Bing Images for real, high-resolution photos."""
+def search_fallback_photos(query, max_results=12):
     urls = []
-    short_q = " ".join(query.split()[:4])
-
-    # 1. Wikimedia Commons bitmap search
+    short_q = " ".join(query.split()[:3])
     try:
         r = requests.get(
             "https://commons.wikimedia.org/w/api.php",
@@ -294,95 +241,65 @@ def search_web_images(query, max_results=14):
                 "iiurlwidth": "1280",
                 "format": "json",
             },
-            headers={"User-Agent": "NelloreDailyBot/2.0 (https://github.com/sainarendra123123-coder)"},
-            timeout=12,
+            headers={"User-Agent": "NelloreDailyBot/4.0 (https://instagram.com/nelloredaily)"},
+            timeout=10,
         ).json()
         for p in r.get("query", {}).get("pages", {}).values():
             if p.get("imageinfo"):
                 u = p["imageinfo"][0].get("thumburl") or p["imageinfo"][0].get("url")
                 if u and any(u.lower().endswith(ext) for ext in (".jpg", ".jpeg", ".png")):
                     urls.append(u)
-    except Exception as e:
-        print(f"Wikimedia search warning: {e}")
+    except Exception:
+        pass
 
-    # 2. Bing Images high-res photo search
     try:
         q_enc = urllib.parse.quote_plus(f"{query} India photo")
         resp = requests.get(
             f"https://www.bing.com/images/search?q={q_enc}&qft=+filterui:imagesize-large+filterui:photo-photo",
             headers=BROWSER_HEADERS,
-            timeout=12,
+            timeout=10,
         )
         found = re.findall(r'murl&quot;:&quot;(https?://[^&]+?\.(?:jpg|jpeg|png))', resp.text, re.I)
         for u in found:
             if u not in urls:
                 urls.append(u)
-    except Exception as e:
-        print(f"Bing image search warning: {e}")
-
-    return urls[:max_results]
-
-
-def download_verified_photo(url, out_path):
-    try:
-        r = requests.get(url, timeout=10, headers=BROWSER_HEADERS)
-        if r.status_code == 200 and len(r.content) > 15000:
-            img = Image.open(io.BytesIO(r.content)).convert("RGB")
-            if img.width >= 480 and img.height >= 320:
-                aspect = img.width / float(img.height)
-                if 0.4 <= aspect <= 2.6:
-                    img.save(out_path, quality=95)
-                    print(f"Downloaded photo ({img.width}x{img.height}): {out_path}")
-                    return out_path
     except Exception:
         pass
-    return None
+    return urls
 
 
-def gather_scene_images(scenes, primary_article_image=""):
+def gather_scene_visuals(scenes):
     image_paths = []
     used_urls = set()
 
-    if primary_article_image:
-        p = download_verified_photo(primary_article_image, "scene_raw_0.jpg")
-        if p:
-            image_paths.append(p)
-            used_urls.add(primary_article_image)
-
-    fallback_queries = [
-        "Andhra Pradesh city landscape",
-        "India news broadcast studio",
-        "Indian street market crowd",
-        "Hyderabad Nellore highway India",
-    ]
-
     for idx, scene in enumerate(scenes):
-        if len(image_paths) > idx:
-            continue
         out_file = f"scene_raw_{idx}.jpg"
-        query = scene.get("image_query", fallback_queries[idx % len(fallback_queries)])
-        candidates = search_web_images(query)
-        if len(candidates) < 3:
-            candidates.extend(search_web_images(fallback_queries[idx % len(fallback_queries)]))
+        v_prompt = scene.get("visual_prompt", "Sunny South Indian street in Nellore with clear blue sky, 9:16 vertical")
+        picked = generate_ai_vertical_visual(v_prompt, out_file)
 
-        picked = None
-        for u in candidates:
-            if u not in used_urls:
-                picked = download_verified_photo(u, out_file)
-                if picked:
-                    used_urls.add(u)
-                    break
+        if not picked:
+            q = scene.get("photo_query", "Andhra Pradesh landscape")
+            for u in search_fallback_photos(q) + search_fallback_photos("South India sunrise landscape"):
+                if u in used_urls:
+                    continue
+                try:
+                    r = requests.get(u, timeout=10, headers=BROWSER_HEADERS)
+                    if r.status_code == 200 and len(r.content) > 18000:
+                        img = Image.open(io.BytesIO(r.content)).convert("RGB")
+                        if img.width >= 450 and img.height >= 300:
+                            img.save(out_file, quality=95)
+                            picked = out_file
+                            used_urls.add(u)
+                            break
+                except Exception:
+                    continue
 
         if picked:
             image_paths.append(picked)
         elif image_paths:
             image_paths.append(image_paths[-1])
-        else:
-            img = Image.new("RGB", (1080, 1920), (18, 26, 46))
-            img.save(out_file)
-            image_paths.append(out_file)
 
-    return image_paths[: len(scenes)]
+    return image_paths
 
 
 def load_font(size, script="telugu"):
@@ -413,200 +330,202 @@ def draw_shaped_text(draw, xy, text, font, fill):
         draw.text(xy, text, fill=fill, font=font)
 
 
-def wrap_text(draw, text, font, max_width):
-    words = text.split()
-    lines, current = [], ""
-    for w in words:
-        test = f"{current} {w}".strip()
-        bbox = draw.textbbox((0, 0), test, font=font)
-        if bbox[2] - bbox[0] <= max_width:
-            current = test
-        else:
-            if current:
-                lines.append(current)
-            current = w
-    if current:
-        lines.append(current)
-    return lines
-
-
-def compose_scene_frame(bg_img_path, badge, headline_te, subtitle_te, scene_idx, total_scenes, out_png):
+def render_auto_reel_frame(bg_img_path, hook_te, caption_words, highlight_idx, show_hook, out_png):
+    """
+    Exact visual layout of the Auto Drivers / Chepala Pulusu reels on @nelloredaily:
+    - 100% full-bleed 1080x1920 vibrant scene (no boxes/borders)
+    - Top-left subtle '• NELLORE DAILY' watermark
+    - Big bold white Telugu hook headline in the upper third ('అదిరిపోయే శుభవార్త!')
+    - Sleek translucent dark pill at the bottom with live yellow active-word karaoke highlight
+    """
     src = Image.open(bg_img_path).convert("RGB")
-    src = ImageEnhance.Contrast(src).enhance(1.08)
-    src = ImageEnhance.Color(src).enhance(1.16)
-    src = ImageEnhance.Sharpness(src).enhance(1.15)
+    src = ImageEnhance.Color(src).enhance(1.15)
+    src = ImageEnhance.Contrast(src).enhance(1.06)
 
-    # 1. Blurred atmospheric full-bleed background
-    bg_ratio = max(1080 / src.width, 1920 / src.height)
-    bg_resized = src.resize((int(src.width * bg_ratio), int(src.height * bg_ratio)), Image.LANCZOS)
-    b_left = (bg_resized.width - 1080) // 2
-    b_top = (bg_resized.height - 1920) // 2
-    canvas = (
-        bg_resized.crop((b_left, b_top, b_left + 1080, b_top + 1920))
-        .filter(ImageFilter.GaussianBlur(radius=24))
-        .convert("RGBA")
-    )
-    dark_tint = Image.new("RGBA", (1080, 1920), (8, 12, 24, 115))
-    canvas = Image.alpha_composite(canvas, dark_tint)
+    scale = max(1080 / src.width, 1920 / src.height)
+    resized = src.resize((int(src.width * scale), int(src.height * scale)), Image.LANCZOS)
+    left = (resized.width - 1080) // 2
+    top = (resized.height - 1920) // 2
+    canvas = resized.crop((left, top, left + 1080, top + 1920)).convert("RGBA")
 
-    # 2. Sharp, framed news photo card in center-upper stage
-    fg_w = 990
-    fg_h = 840
-    fg_ratio = max(fg_w / src.width, fg_h / src.height)
-    fg_resized = src.resize((int(src.width * fg_ratio), int(src.height * fg_ratio)), Image.LANCZOS)
-    f_left = (fg_resized.width - fg_w) // 2
-    f_top = (fg_resized.height - fg_h) // 2
-    fg_crop = fg_resized.crop((f_left, f_top, f_left + fg_w, f_top + fg_h)).convert("RGBA")
-
-    mask = Image.new("L", (fg_w, fg_h), 0)
-    ImageDraw.Draw(mask).rounded_rectangle([0, 0, fg_w, fg_h], radius=28, fill=255)
-    canvas.paste(fg_crop, (45, 360), mask)
+    # Subtle top sky darkening so white hook text & watermark pop naturally
+    grad = Image.new("RGBA", (1080, 1920), (0, 0, 0, 0))
+    gdraw = ImageDraw.Draw(grad)
+    for y in range(0, 620):
+        alpha = int(105 * (1 - y / 620))
+        gdraw.line([(0, y), (1080, y)], fill=(0, 0, 0, alpha))
+    for y in range(1420, 1920):
+        prog = (y - 1420) / 500
+        alpha = int(145 * prog)
+        gdraw.line([(0, y), (1080, y)], fill=(0, 0, 0, alpha))
+    canvas = Image.alpha_composite(canvas, grad)
 
     draw = ImageDraw.Draw(canvas)
-    draw.rounded_rectangle([45, 360, 45 + fg_w, 360 + fg_h], radius=28, outline=(255, 255, 255, 90), width=3)
 
-    # 3. Top Brand Header Bar
-    draw.rounded_rectangle([45, 65, 1035, 155], radius=20, fill=(220, 38, 38, 245))
-    te_brand_font = load_font(40, "telugu")
-    en_brand_font = load_font(34, "english")
-    draw_shaped_text(draw, (78, 86), "నెల్లూరు డైలీ", te_brand_font, (255, 255, 255, 255))
-    draw.text((665, 91), "NELLORE DAILY", fill=(255, 255, 255, 255), font=en_brand_font)
+    # 1. Top-Left Minimalist Watermark ('• NELLORE DAILY')
+    wm_font = load_font(25, "english")
+    draw.ellipse([72, 86, 86, 100], fill=(250, 204, 21, 245))
+    draw.text((98, 79), "NELLORE DAILY", fill=(255, 255, 255, 235), font=wm_font)
 
-    # 4. Category Pill & Scene Progress Bars
-    badge_colors = {
-        "NELLORE CITY": (14, 165, 233, 245),
-        "JOBS ALERT": (22, 163, 74, 245),
-        "CRICKET": (37, 99, 235, 245),
-        "TOLLYWOOD": (147, 51, 234, 245),
-        "TRENDING": (234, 88, 12, 245),
-    }
-    pill_col = badge_colors.get(badge.upper(), (220, 38, 38, 245))
-    draw.rounded_rectangle([45, 178, 440, 234], radius=14, fill=pill_col)
-    badge_font = load_font(27, "english")
-    draw.text((70, 190), f"LIVE  |  {badge.upper()}", fill=(255, 255, 255, 255), font=badge_font)
+    # 2. Big Bold Telugu Hook Headline in Upper Third (Scene 1 & 2, just like 'అదిరిపోయే శుభవార్త!')
+    if show_hook and hook_te:
+        hook_font = load_font(74, "telugu")
+        words = hook_te.split()
+        lines, cur = [], ""
+        for w in words:
+            test = f"{cur} {w}".strip()
+            if draw.textbbox((0, 0), test, font=hook_font)[2] <= 940:
+                cur = test
+            else:
+                if cur:
+                    lines.append(cur)
+                cur = w
+        if cur:
+            lines.append(cur)
 
-    bar_w = 54
-    start_x = 1035 - (total_scenes * (bar_w + 10))
-    for i in range(total_scenes):
-        col = (250, 204, 21, 255) if i <= scene_idx else (255, 255, 255, 110)
+        hy = 340
+        for line in lines[:2]:
+            bbox = draw.textbbox((0, 0), line, font=hook_font)
+            hx = (1080 - (bbox[2] - bbox[0])) // 2
+            draw_shaped_text(draw, (hx + 3, hy + 4), line, hook_font, (0, 0, 0, 145))
+            draw_shaped_text(draw, (hx, hy), line, hook_font, (255, 255, 255, 255))
+            hy += 96
+
+    # 3. Bottom Translucent Pill with Live Word-by-Word Yellow Highlight
+    if caption_words:
+        cap_font = load_font(44, "telugu")
+        space_w = draw.textbbox((0, 0), " ", font=cap_font)[2]
+        word_widths = [draw.textbbox((0, 0), w, font=cap_font)[2] for w in caption_words]
+        total_w = sum(word_widths) + space_w * max(0, len(caption_words) - 1)
+
+        pad_x, pad_y = 34, 18
+        pill_w = min(980, total_w + pad_x * 2)
+        pill_h = 84
+        px1 = (1080 - pill_w) // 2
+        py1 = 1595
         draw.rounded_rectangle(
-            [start_x + i * (bar_w + 10), 200, start_x + i * (bar_w + 10) + bar_w, 212],
-            radius=6,
-            fill=col,
+            [px1, py1, px1 + pill_w, py1 + pill_h],
+            radius=20,
+            fill=(15, 18, 25, 168),
         )
 
-    # 5. Story Headline Banner above Photo
-    head_font = load_font(42, "telugu")
-    head_lines = wrap_text(draw, headline_te, head_font, 980)
-    for hline in head_lines[:1]:
-        draw_shaped_text(draw, (52, 258), hline, head_font, (250, 204, 21, 255))
-
-    # 6. Bottom Newsroom Subtitle Card (above Instagram Reels UI safe zone)
-    sub_font = load_font(52, "telugu")
-    lines = wrap_text(draw, subtitle_te, sub_font, 900)
-    display_lines = lines[:2] if lines else [subtitle_te]
-    card_h = 54 + len(display_lines) * 76
-    card_bottom = 1610
-    card_top = card_bottom - card_h
-
-    draw.rounded_rectangle(
-        [45, card_top, 1035, card_bottom],
-        radius=26,
-        fill=(10, 15, 28, 238),
-        outline=(250, 204, 21, 255),
-        width=4,
-    )
-    draw.rounded_rectangle([45, card_top + 18, 61, card_bottom - 18], radius=8, fill=(220, 38, 38, 255))
-
-    y = card_top + 24
-    for line in display_lines:
-        bbox = draw.textbbox((0, 0), line, font=sub_font)
-        x = (1080 - (bbox[2] - bbox[0])) // 2
-        draw_shaped_text(draw, (x, y), line, sub_font, (255, 255, 255, 255))
-        y += 76
+        cx = (1080 - total_w) // 2
+        cy = py1 + pad_y
+        for idx, (word, ww) in enumerate(zip(caption_words, word_widths)):
+            color = (250, 204, 21, 255) if idx == highlight_idx else (255, 255, 255, 250)
+            draw_shaped_text(draw, (cx, cy), word, cap_font, color)
+            cx += ww + space_w
 
     canvas.convert("RGB").save(out_png, quality=95)
 
 
-async def generate_natural_voiceover(scenes, out_audio="voice.mp3"):
+async def generate_voice_with_word_timings(scenes, out_audio="voice.mp3"):
+    """Generates natural Telugu voiceover + exact word-level timestamps for karaoke captions."""
     full_script = " ".join(s["narration_te"].strip() for s in scenes)
     full_script = re.sub(r"#\S+", "", full_script)
     full_script = re.sub(r"[•|★☆🔥⚠️✅📍📅⏰🎬🏏💼👇]", " ", full_script)
     full_script = re.sub(r"\s+", " ", full_script).strip()
 
-    communicate = edge_tts.Communicate(full_script, "te-IN-ShrutiNeural", rate="-2%")
-    await communicate.save(out_audio)
+    communicate = edge_tts.Communicate(full_script, "te-IN-ShrutiNeural", rate="-3%")
+    word_events = []
+    with open(out_audio, "wb") as audio_file:
+        async for chunk in communicate.stream():
+            if chunk["type"] == "audio":
+                audio_file.write(chunk["data"])
+            elif chunk["type"] == "WordBoundary":
+                word_events.append({
+                    "text": chunk["text"],
+                    "start": chunk["offset"] / 10_000_000.0,
+                    "end": (chunk["offset"] + chunk["duration"]) / 10_000_000.0,
+                })
 
     probe = subprocess.check_output(
         [
-            "ffprobe",
-            "-v",
-            "error",
-            "-show_entries",
-            "format=duration",
-            "-of",
-            "default=noprint_wrappers=1:nokey=1",
-            out_audio,
+            "ffprobe", "-v", "error", "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1", out_audio,
         ]
     ).decode().strip()
-
     total_dur = max(float(probe), 10.0)
-    counts = [max(1, len(s["narration_te"].split())) for s in scenes]
-    total_words = sum(counts)
-    return [max(2.6, (c / total_words) * total_dur + 0.35) for c in counts]
 
-
-def build_fast_cinema_video(scenes, durations, image_paths, badge, headline_te, bgm_path=None, out_video="reel.mp4"):
-    scene_clips = []
-    total_scenes = len(scenes)
-
-    for idx, (scene, dur, img_path) in enumerate(zip(scenes, durations, image_paths)):
-        composed_png = f"composed_{idx}.png"
-        compose_scene_frame(
-            img_path,
-            badge,
-            headline_te,
-            scene.get("subtitle_te", ""),
-            idx,
-            total_scenes,
-            composed_png,
-        )
-        clip_out = f"clip_{idx}.mp4"
-        if idx % 2 == 0:
-            vf = "scale=1160:2062,crop=1080:1920:'min(80, n*1.1)':'min(142, n*1.8)',format=yuv420p"
-        else:
-            vf = "scale=1160:2062,crop=1080:1920:'max(0, 80-n*1.1)':'max(0, 142-n*1.8)',format=yuv420p"
-
-        cmd = [
-            "ffmpeg", "-y", "-loop", "1", "-framerate", "30", "-t", f"{dur:.2f}",
-            "-i", composed_png, "-vf", vf, "-c:v", "libx264", "-profile:v", "high",
-            "-level", "4.1", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p", clip_out,
+    # Fallback evenly spaced word timings if WordBoundary events are sparse
+    if len(word_events) < 5:
+        words = full_script.split()
+        step = total_dur / max(1, len(words))
+        word_events = [
+            {"text": w, "start": i * step, "end": (i + 1) * step}
+            for i, w in enumerate(words)
         ]
-        subprocess.run(cmd, check=True)
-        scene_clips.append(clip_out)
 
-    trans_dur = 0.4
-    inputs = []
-    for c in scene_clips:
-        inputs.extend(["-i", c])
+    return total_dur, word_events
 
-    filter_parts = []
-    prev = "[0:v]"
-    offset = durations[0] - trans_dur
-    for i in range(1, len(scene_clips)):
-        tr = XFADE_TRANSITIONS[(i - 1) % len(XFADE_TRANSITIONS)]
-        out_lbl = f"[v{i}]" if i < len(scene_clips) - 1 else "[vmerged]"
-        filter_parts.append(
-            f"{prev}[{i}:v]xfade=transition={tr}:duration={trans_dur:.2f}:offset={max(0.5, offset):.2f}{out_lbl}"
-        )
-        prev = out_lbl
-        offset += durations[i] - trans_dur
+
+def build_karaoke_cinema_reel(scenes, total_dur, word_events, image_paths, hook_te, bgm_path=None, out_video="reel.mp4"):
+    """Builds smooth zoomed scenes + live word-highlighted karaoke captions just like the Auto reel."""
+    fps = 24
+    total_frames = int(total_dur * fps)
+    num_scenes = len(image_paths)
+    frames_per_scene = max(1, total_frames // num_scenes)
+
+    # Group words into 4-word caption chunks
+    chunks = []
+    for i in range(0, len(word_events), 4):
+        group = word_events[i : i + 4]
+        chunks.append({
+            "words": [g["text"] for g in group],
+            "starts": [g["start"] for g in group],
+            "start_t": group[0]["start"],
+            "end_t": group[-1]["end"] + 0.35,
+        })
+
+    # Pre-render static scene bases (with and without hook) so frame rendering is ultra-fast
+    os.makedirs("frames", exist_ok=True)
+    rendered_cache = {}
+
+    for f_idx in range(total_frames):
+        t = f_idx / fps
+        scene_idx = min(num_scenes - 1, f_idx // frames_per_scene)
+        show_hook = scene_idx <= 1
+
+        active_chunk = None
+        active_word_idx = -1
+        for c_idx, ch in enumerate(chunks):
+            if ch["start_t"] <= t <= ch["end_t"]:
+                active_chunk = c_idx
+                for w_i, ws in enumerate(ch["starts"]):
+                    if t >= ws:
+                        active_word_idx = w_i
+                break
+
+        cache_key = (scene_idx, show_hook, active_chunk, active_word_idx)
+        if cache_key not in rendered_cache:
+            cached_png = f"frames/base_{scene_idx}_{int(show_hook)}_{active_chunk}_{active_word_idx}.png"
+            words_list = chunks[active_chunk]["words"] if active_chunk is not None else []
+            render_auto_reel_frame(
+                image_paths[scene_idx],
+                hook_te,
+                words_list,
+                active_word_idx,
+                show_hook,
+                cached_png,
+            )
+            rendered_cache[cache_key] = cached_png
+
+        # Subtle smooth zoom progression per scene
+        local_f = f_idx % frames_per_scene
+        zoom = 1.0 + 0.06 * (local_f / max(1, frames_per_scene))
+        frame_img = Image.open(rendered_cache[cache_key])
+        if zoom > 1.002:
+            zw, zh = int(1080 * zoom), int(1920 * zoom)
+            z_img = frame_img.resize((zw, zh), Image.BILINEAR)
+            lx, ty = (zw - 1080) // 2, (zh - 1920) // 2
+            frame_img = z_img.crop((lx, ty, lx + 1080, ty + 1920))
+        frame_img.save(f"frames/f_{f_idx:05d}.jpg", quality=92)
 
     subprocess.run(
         [
-            "ffmpeg", "-y", *inputs, "-filter_complex", ";".join(filter_parts),
-            "-map", "[vmerged]", "-c:v", "libx264", "-profile:v", "high",
-            "-level", "4.1", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p", "stitched.mp4",
+            "ffmpeg", "-y", "-framerate", str(fps), "-i", "frames/f_%05d.jpg",
+            "-c:v", "libx264", "-profile:v", "high", "-level", "4.1",
+            "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p", "stitched.mp4",
         ],
         check=True,
     )
@@ -721,27 +640,18 @@ def main():
         return
 
     story = generate_storyboard_with_gemini(articles)
-    print("Selected Story:", story.get("headline_te"))
+    print("Selected Hook:", story.get("hook_te"))
 
-    primary_img = ""
-    for art in articles:
-        if art["link"] == story["selected_link"]:
-            primary_img = art.get("rss_image", "")
-            break
+    image_paths = gather_scene_visuals(story["scenes"])
+    total_dur, word_events = asyncio.run(generate_voice_with_word_timings(story["scenes"]))
+    bgm_file = pick_bgm(story.get("bgm_mood", "emotional"))
 
-    if not primary_img:
-        primary_img = extract_article_og_image(story["selected_link"])
-
-    image_paths = gather_scene_images(story["scenes"], primary_img)
-    durations = asyncio.run(generate_natural_voiceover(story["scenes"]))
-    bgm_file = pick_bgm(story.get("bgm_mood", "general"))
-
-    build_fast_cinema_video(
+    build_karaoke_cinema_reel(
         scenes=story["scenes"],
-        durations=durations,
+        total_dur=total_dur,
+        word_events=word_events,
         image_paths=image_paths,
-        badge=story.get("category_badge", "NELLORE CITY"),
-        headline_te=story.get("headline_te", "తాజా వార్తలు"),
+        hook_te=story.get("hook_te", "తాజా వార్త!"),
         bgm_path=bgm_file,
     )
 
@@ -767,7 +677,7 @@ def main():
 
     history.append(story["selected_link"])
     save_history(history)
-    print(f"Hourly Cinema Reel completed! (IG={ig_ok}, FB={fb_ok})")
+    print(f"Hourly Auto-Style Cinema Reel completed! (IG={ig_ok}, FB={fb_ok})")
 
 
 if __name__ == "__main__":
