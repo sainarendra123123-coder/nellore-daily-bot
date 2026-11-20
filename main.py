@@ -1,8 +1,10 @@
 import os
 import re
+import io
 import json
 import time
 import html
+import urllib.parse
 import asyncio
 import random
 import subprocess
@@ -11,7 +13,7 @@ from datetime import datetime, timezone, timedelta
 import feedparser
 import requests
 import edge_tts
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageEnhance
 from google import genai
 from google.genai import types
 
@@ -157,10 +159,10 @@ STRICT RULES:
 4. NATURAL SPOKEN TELUGU VOICEOVER:
    - Write a warm, conversational 45-to-55 word Telugu script split into 4 scenes.
    - Use everyday spoken Nellore Telugu (e.g., "మన నెల్లూరు వాళ్లకి...", "మన ఆటో అన్నలకు...").
-5. REALISTIC MOVING VIDEO PROMPTS FOR EACH SCENE:
+5. REAL VIDEO FOOTAGE & BACKUP VISUALS FOR EACH SCENE:
    - For each of the 4 scenes, provide:
-     a) "video_prompt": A vivid, realistic, cinematic 9:16 vertical video prompt set in South India / Andhra Pradesh with real camera motion (e.g., "Handheld cinematic shot tracking yellow auto rickshaws driving down a sunny tree-lined street in Nellore India, clear blue sky at top third, warm golden light, natural motion, 9:16 vertical"). Keep top third clean sky/open background so white hook text stands out!
-     b) "video_query": A simple 2-word English stock video search phrase as backup (e.g., "Indian street", "cricket match", "gold jewelry", "students studying", "cooking food", "ocean waves").
+     a) "video_query": A single simple English noun/topic keyword for stock footage search (e.g., "India", "traffic", "cricket", "gold", "students", "cooking", "ocean", "cinema", "temple").
+     b) "visual_prompt": A vivid 9:16 vertical scene description in South India / Andhra Pradesh with clean open sky at the top third.
    - Make all 4 scenes visually distinct!
 6. METADATA:
    - "category_badge": One of "NELLORE CITY", "JOBS ALERT", "CRICKET", "TOLLYWOOD", "TRENDING".
@@ -168,7 +170,7 @@ STRICT RULES:
    - "bgm_mood": One of "emotional", "breaking", "devotional", "general".
 
 Return strictly valid JSON with keys:
-"selected_link", "category_badge", "hook_te", "scenes" (array of 4 objects with "narration_te", "video_prompt", "video_query"), "caption", "bgm_mood"
+"selected_link", "category_badge", "hook_te", "scenes" (array of 4 objects with "narration_te", "video_query", "visual_prompt"), "caption", "bgm_mood"
 """
 
     last_err = None
@@ -197,55 +199,64 @@ Return strictly valid JSON with keys:
     raise RuntimeError(f"All Gemini models failed: {last_err}")
 
 
-def generate_veo_video_clip(prompt, out_mp4):
-    """Generates a real 9:16 vertical moving AI video clip using your GEMINI_API_KEY."""
-    client = genai.Client(api_key=GEMINI_API_KEY)
-    for veo_model in ["veo-2.0-generate-001", "veo-3.0-generate-preview"]:
-        try:
-            print(f"Generating real video with {veo_model}: {prompt}")
-            operation = client.models.generate_videos(
-                model=veo_model,
-                prompt=prompt,
-                config=types.GenerateVideosConfig(
-                    aspect_ratio="9:16",
-                    duration_seconds=5,
-                    person_generation="allow_adult",
-                ),
-            )
-            for _ in range(24):
-                if operation.done:
-                    break
-                time.sleep(10)
-                operation = client.operations.get(operation)
-
-            if operation.response and operation.response.generated_videos:
-                vid = operation.response.generated_videos[0].video
-                vid_bytes = client.files.download(file=vid)
-                with open(out_mp4, "wb") as f:
-                    f.write(vid_bytes)
-                print(f"SUCCESS: Generated real 9:16 video clip ({veo_model}): {out_mp4}")
-                return out_mp4
-        except Exception as e:
-            print(f"Veo ({veo_model}) error: {e}")
+def search_archive_mp4(query, out_mp4, used_ids):
+    """Fetches real public-domain MP4 video footage from Internet Archive (zero API key)."""
+    try:
+        r = requests.get(
+            "https://archive.org/advancedsearch.php",
+            params={
+                "q": f"({query}) AND mediatype:(movies) AND format:(MPEG4)",
+                "fl[]": ["identifier", "title"],
+                "rows": "12",
+                "output": "json",
+            },
+            headers=BROWSER_HEADERS,
+            timeout=12,
+        ).json()
+        for doc in r.get("response", {}).get("docs", []):
+            ident = doc.get("identifier")
+            if not ident or ident in used_ids:
+                continue
+            meta = requests.get(f"https://archive.org/metadata/{ident}/files", timeout=10).json()
+            for f in meta.get("result", []):
+                name = f.get("name", "")
+                size = int(f.get("size", 0) or 0)
+                if name.lower().endswith(".mp4") and 250_000 < size < 18_000_000:
+                    dl_url = f"https://archive.org/download/{ident}/{urllib.parse.quote(name)}"
+                    raw_dl = f"tmp_{ident}.mp4"
+                    vr = requests.get(dl_url, headers=BROWSER_HEADERS, timeout=25)
+                    if vr.status_code == 200 and len(vr.content) > 250_000:
+                        with open(raw_dl, "wb") as fp:
+                            fp.write(vr.content)
+                        subprocess.run(
+                            ["ffmpeg", "-y", "-ss", "2", "-i", raw_dl, "-t", "8", "-an", "-c:v", "libx264", "-preset", "veryfast", out_mp4],
+                            check=True,
+                        )
+                        used_ids.add(ident)
+                        print(f"Downloaded real Archive.org MP4 ({query}): {out_mp4}")
+                        return out_mp4
+    except Exception as e:
+        print(f"Archive.org video notice ({query}): {e}")
     return None
 
 
-def search_wikimedia_video_clip(query, out_mp4, used_ids):
-    """Zero-key real video footage fallback from Wikimedia Commons."""
+def search_wikimedia_mp4(keyword, out_mp4, used_ids):
+    """Fetches real video footage from Wikimedia Commons using a single clean keyword."""
+    single_kw = (keyword.split()[0] if keyword else "India").strip()
     try:
         r = requests.get(
             "https://commons.wikimedia.org/w/api.php",
             params={
                 "action": "query",
                 "generator": "search",
-                "gsrsearch": f"filetype:video {query}",
+                "gsrsearch": f"filetype:video {single_kw}",
                 "gsrnamespace": "6",
-                "gsrlimit": "12",
+                "gsrlimit": "15",
                 "prop": "videoinfo|imageinfo",
                 "iiprop": "url|size",
                 "format": "json",
             },
-            headers={"User-Agent": "NelloreDailyBot/6.0 (https://instagram.com/nelloredaily)"},
+            headers={"User-Agent": "NelloreDailyBot/7.0 (https://instagram.com/nelloredaily)"},
             timeout=15,
         ).json()
         for page_id, p in r.get("query", {}).get("pages", {}).items():
@@ -256,7 +267,7 @@ def search_wikimedia_video_clip(query, out_mp4, used_ids):
             url = info.get("url", "")
             if url and any(url.lower().endswith(ext) for ext in (".mp4", ".webm", ".ogv")):
                 raw_dl = f"tmp_{page_id}.video"
-                vr = requests.get(url, headers=BROWSER_HEADERS, timeout=35)
+                vr = requests.get(url, headers=BROWSER_HEADERS, timeout=30)
                 if vr.status_code == 200 and len(vr.content) > 150_000:
                     with open(raw_dl, "wb") as f:
                         f.write(vr.content)
@@ -265,10 +276,42 @@ def search_wikimedia_video_clip(query, out_mp4, used_ids):
                         check=True,
                     )
                     used_ids.add(vid_id)
-                    print(f"Downloaded Wikimedia real video ({query}): {out_mp4}")
+                    print(f"Downloaded real Wikimedia video ({single_kw}): {out_mp4}")
                     return out_mp4
     except Exception as e:
-        print(f"Wikimedia video warning ({query}): {e}")
+        print(f"Wikimedia video notice ({single_kw}): {e}")
+    return None
+
+
+def generate_imagen_motion_clip(prompt, out_mp4):
+    """Unbreakable fallback: generates a 9:16 AI visual via Imagen 3 and turns it into a smooth moving clip."""
+    client = genai.Client(api_key=GEMINI_API_KEY)
+    try:
+        res = client.models.generate_images(
+            model="imagen-3.0-generate-002",
+            prompt=prompt,
+            config=types.GenerateImagesConfig(
+                number_of_images=1,
+                aspect_ratio="9:16",
+                output_mime_type="image/jpeg",
+            ),
+        )
+        if res.generated_images:
+            img_bytes = res.generated_images[0].image.image_bytes
+            img_path = out_mp4.replace(".mp4", ".jpg")
+            Image.open(io.BytesIO(img_bytes)).convert("RGB").save(img_path, quality=95)
+            subprocess.run(
+                [
+                    "ffmpeg", "-y", "-loop", "1", "-framerate", "30", "-t", "8", "-i", img_path,
+                    "-vf", "scale=1180:2098,crop=1080:1920:'min(100, n*0.6)':'min(178, n*1.0)',format=yuv420p",
+                    "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", out_mp4,
+                ],
+                check=True,
+            )
+            print(f"Generated Imagen 9:16 motion clip fallback: {out_mp4}")
+            return out_mp4
+    except Exception as e:
+        print(f"Imagen fallback notice: {e}")
     return None
 
 
@@ -281,29 +324,29 @@ def gather_scene_videos(scenes, category="NELLORE CITY"):
         "TOLLYWOOD": ["cinema", "theater", "festival", "India"],
         "JOBS ALERT": ["students", "university", "library", "office"],
         "TRENDING": ["gold", "market", "traffic", "India"],
-        "NELLORE CITY": ["India street", "temple", "river", "cooking"],
+        "NELLORE CITY": ["India", "temple", "river", "cooking"],
     }
     cat_fallbacks = fallbacks.get(category.upper(), fallbacks["NELLORE CITY"])
 
     for idx, scene in enumerate(scenes):
         out_mp4 = f"raw_clip_{idx}.mp4"
-        v_prompt = scene.get("video_prompt", "Cinematic sunlit street in Nellore India with traffic moving, 9:16 vertical")
-        picked = generate_veo_video_clip(v_prompt, out_mp4)
+        q = scene.get("video_query", cat_fallbacks[idx % len(cat_fallbacks)])
+        v_prompt = scene.get("visual_prompt", "Sunny street in Nellore Andhra Pradesh with clear blue sky, 9:16 vertical")
 
-        if not picked:
-            q = scene.get("video_query", cat_fallbacks[idx % len(cat_fallbacks)])
-            picked = search_wikimedia_video_clip(q, out_mp4, used_ids)
-        if not picked:
-            picked = search_wikimedia_video_clip(cat_fallbacks[idx % len(cat_fallbacks)], out_mp4, used_ids)
-        if not picked:
-            picked = search_wikimedia_video_clip("India", out_mp4, used_ids)
+        picked = (
+            search_archive_mp4(q, out_mp4, used_ids)
+            or search_wikimedia_mp4(q, out_mp4, used_ids)
+            or search_archive_mp4(cat_fallbacks[idx % len(cat_fallbacks)], out_mp4, used_ids)
+            or search_wikimedia_mp4(cat_fallbacks[idx % len(cat_fallbacks)], out_mp4, used_ids)
+            or generate_imagen_motion_clip(v_prompt, out_mp4)
+        )
 
         if picked:
             video_paths.append(picked)
         elif video_paths:
             video_paths.append(video_paths[-1])
         else:
-            raise RuntimeError("Could not generate or download any video clips.")
+            raise RuntimeError("All video and image fallbacks failed.")
 
     return video_paths
 
