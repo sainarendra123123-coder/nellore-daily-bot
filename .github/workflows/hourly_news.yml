@@ -2,13 +2,12 @@ name: Nellore Daily News Reel Bot
 
 on:
   schedule:
-    # Runs at :30 UTC every hour = :00 IST (8:00 AM, 9:00 AM, 10:00 AM IST, etc.)
-    - cron: '30 * * * *'
+    - cron: '5 * * * *'
   workflow_dispatch:
     inputs:
       preview_only:
-        description: 'Preview mode only (download reel.mp4 in Artifacts without posting)'
-        required: true
+        description: 'Generate video artifact only without posting to IG/FB'
+        required: false
         default: 'false'
         type: boolean
 
@@ -18,8 +17,6 @@ permissions:
 jobs:
   build-and-post:
     runs-on: ubuntu-latest
-    timeout-minutes: 12
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -29,15 +26,15 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install FFmpeg, Telugu Fonts, and Complex Text Shaping (libraqm)
+      - name: Install system dependencies (FFmpeg + Telugu Fonts)
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg fonts-noto-core fonts-noto-extra libraqm0
+          sudo apt-get install -y ffmpeg fonts-noto-core fonts-noto-extra fonts-dejavu-core
 
       - name: Install Python dependencies
         run: |
           pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install feedparser requests edge-tts pillow google-genai
 
       - name: Run News Reel Bot
         env:
@@ -48,21 +45,19 @@ jobs:
           PREVIEW_ONLY: ${{ github.event.inputs.preview_only || 'false' }}
         run: python main.py
 
-      - name: Upload Reel Artifact (Always Available to Download & Inspect)
+      - name: Upload Reel Video Artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: nellore-daily-reel-${{ github.run_number }}
           path: reel.mp4
-          if-no-files-found: ignore
-          retention-days: 3
+          retention-days: 5
 
       - name: Save posted news history
-        if: success()
+        if: success() && github.event.inputs.preview_only != 'true'
         run: |
-          git config user.name "Nellore Daily Bot"
+          git config user.name "nellore-daily-bot"
           git config user.email "bot@nelloredaily.local"
           git add posted_history.json
-          git diff --quiet && git diff --staged --quiet || git commit -m "Update posted news history"
-          git pull --rebase origin main || true
+          git diff --staged --quiet || git commit -m "chore: record posted news [skip ci]"
           git push
