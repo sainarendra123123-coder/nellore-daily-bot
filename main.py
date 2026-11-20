@@ -1,11 +1,8 @@
 import os
 import re
-import io
 import json
 import time
 import html
-import base64
-import urllib.parse
 import asyncio
 import random
 import subprocess
@@ -14,7 +11,7 @@ from datetime import datetime, timezone, timedelta
 import feedparser
 import requests
 import edge_tts
-from PIL import Image, ImageDraw, ImageFont, ImageEnhance
+from PIL import Image, ImageDraw, ImageFont
 from google import genai
 from google.genai import types
 
@@ -33,7 +30,6 @@ BROWSER_HEADERS = {
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
         "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
     ),
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
     "Accept-Language": "te-IN,te;q=0.9,en-US;q=0.8,en;q=0.7",
 }
 
@@ -69,7 +65,6 @@ POLITICS_BLOCKLIST = [
 ]
 
 GEMINI_MODELS = ["gemini-3.8-flash", "gemini-3.5-flash-lite"]
-XFADE_TRANSITIONS = ["dissolve", "fade", "smoothleft", "smoothright"]
 
 
 def load_history():
@@ -158,20 +153,22 @@ STRICT RULES:
 1. ZERO POLITICS: Never pick political parties, leaders, speeches, or elections.
 2. TOPIC: Prefer '{preferred_cat}' if a strong fresh story is available; otherwise pick the best fresh story on Nellore city updates/schemes/food, AP/Nellore Jobs, Cricket, Tollywood, or Gold/Silver & trending facts.
 3. HOOK TITLE ("hook_te"):
-   - Write a super punchy 2-to-3 word Telugu emotional hook that appears big in the upper third of the reel (just like "అదిరిపోయే శుభవార్త!" or "ఒక ఎమోషన్!").
+   - Super punchy 2-to-3 word Telugu emotional hook shown big in the upper third (like "అదిరిపోయే శుభవార్త!" or "ఒక ఎమోషన్!").
 4. NATURAL SPOKEN TELUGU VOICEOVER:
    - Write a warm, conversational 45-to-55 word Telugu script split into 4 scenes.
-   - Use everyday spoken Nellore Telugu (e.g., "మన నెల్లూరు వాళ్లకి...", "మన ఆటో అన్నలకు అదిరిపోయే శుభవార్త...").
-5. CINEMATIC 9:16 VERTICAL VISUAL PROMPTS FOR EACH OF THE 4 SCENES:
-   - For each scene, write:
-     a) "visual_prompt": A vivid, realistic, colorful 9:16 vertical photography/illustration prompt set in South India / Andhra Pradesh (e.g., "Vibrant sunlit street in Nellore Andhra Pradesh with yellow auto rickshaws driving down a tree-lined avenue, clear blue sky at top third, warm cinematic golden hour photography, 9:16 vertical"). Always keep the top third clean sky/open space so white hook text stands out clearly!
-     b) "photo_query": A 2-to-3 word English fallback search query (e.g., "Nellore street India", "Indian cricket stadium", "gold jewellery India").
+   - Use everyday spoken Nellore Telugu (e.g., "మన నెల్లూరు వాళ్లకి...", "మన ఆటో అన్నలకు...").
+5. REALISTIC MOVING VIDEO PROMPTS FOR EACH SCENE:
+   - For each of the 4 scenes, provide:
+     a) "video_prompt": A vivid, realistic, cinematic 9:16 vertical video prompt set in South India / Andhra Pradesh with real camera motion (e.g., "Handheld cinematic shot tracking yellow auto rickshaws driving down a sunny tree-lined street in Nellore India, clear blue sky at top third, warm golden light, natural motion, 9:16 vertical"). Keep top third clean sky/open background so white hook text stands out!
+     b) "video_query": A simple 2-word English stock video search phrase as backup (e.g., "Indian street", "cricket match", "gold jewelry", "students studying", "cooking food", "ocean waves").
+   - Make all 4 scenes visually distinct!
 6. METADATA:
+   - "category_badge": One of "NELLORE CITY", "JOBS ALERT", "CRICKET", "TOLLYWOOD", "TRENDING".
    - "caption": Detailed, helpful Instagram & Facebook caption in Telugu + English with emojis, bullet points, source credit, and hashtags.
    - "bgm_mood": One of "emotional", "breaking", "devotional", "general".
 
 Return strictly valid JSON with keys:
-"selected_link", "hook_te", "scenes" (array of 4 objects with "narration_te", "visual_prompt", "photo_query"), "caption", "bgm_mood"
+"selected_link", "category_badge", "hook_te", "scenes" (array of 4 objects with "narration_te", "video_prompt", "video_query"), "caption", "bgm_mood"
 """
 
     last_err = None
@@ -200,106 +197,115 @@ Return strictly valid JSON with keys:
     raise RuntimeError(f"All Gemini models failed: {last_err}")
 
 
-def generate_ai_vertical_visual(prompt, out_path):
-    """Generates a custom 9:16 vertical visual matching the Auto Drivers / Chepala Pulusu reel style."""
+def generate_veo_video_clip(prompt, out_mp4):
+    """Generates a real 9:16 vertical moving AI video clip using your GEMINI_API_KEY."""
     client = genai.Client(api_key=GEMINI_API_KEY)
-    try:
-        res = client.models.generate_images(
-            model="imagen-3.0-generate-002",
-            prompt=prompt,
-            config=types.GenerateImagesConfig(
-                number_of_images=1,
-                aspect_ratio="9:16",
-                output_mime_type="image/jpeg",
-            ),
-        )
-        if res.generated_images:
-            img_bytes = res.generated_images[0].image.image_bytes
-            img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
-            img.save(out_path, quality=95)
-            print(f"Generated 9:16 AI visual: {out_path}")
-            return out_path
-    except Exception as e:
-        print(f"Imagen fallback notice: {e}")
+    for veo_model in ["veo-2.0-generate-001", "veo-3.0-generate-preview"]:
+        try:
+            print(f"Generating real video with {veo_model}: {prompt}")
+            operation = client.models.generate_videos(
+                model=veo_model,
+                prompt=prompt,
+                config=types.GenerateVideosConfig(
+                    aspect_ratio="9:16",
+                    duration_seconds=5,
+                    person_generation="allow_adult",
+                ),
+            )
+            for _ in range(24):
+                if operation.done:
+                    break
+                time.sleep(10)
+                operation = client.operations.get(operation)
+
+            if operation.response and operation.response.generated_videos:
+                vid = operation.response.generated_videos[0].video
+                vid_bytes = client.files.download(file=vid)
+                with open(out_mp4, "wb") as f:
+                    f.write(vid_bytes)
+                print(f"SUCCESS: Generated real 9:16 video clip ({veo_model}): {out_mp4}")
+                return out_mp4
+        except Exception as e:
+            print(f"Veo ({veo_model}) error: {e}")
     return None
 
 
-def search_fallback_photos(query, max_results=12):
-    urls = []
-    short_q = " ".join(query.split()[:3])
+def search_wikimedia_video_clip(query, out_mp4, used_ids):
+    """Zero-key real video footage fallback from Wikimedia Commons."""
     try:
         r = requests.get(
             "https://commons.wikimedia.org/w/api.php",
             params={
                 "action": "query",
                 "generator": "search",
-                "gsrsearch": f"filetype:bitmap {short_q}",
+                "gsrsearch": f"filetype:video {query}",
                 "gsrnamespace": "6",
-                "gsrlimit": str(max_results),
-                "prop": "imageinfo",
-                "iiprop": "url",
-                "iiurlwidth": "1280",
+                "gsrlimit": "12",
+                "prop": "videoinfo|imageinfo",
+                "iiprop": "url|size",
                 "format": "json",
             },
-            headers={"User-Agent": "NelloreDailyBot/4.0 (https://instagram.com/nelloredaily)"},
-            timeout=10,
+            headers={"User-Agent": "NelloreDailyBot/6.0 (https://instagram.com/nelloredaily)"},
+            timeout=15,
         ).json()
-        for p in r.get("query", {}).get("pages", {}).values():
-            if p.get("imageinfo"):
-                u = p["imageinfo"][0].get("thumburl") or p["imageinfo"][0].get("url")
-                if u and any(u.lower().endswith(ext) for ext in (".jpg", ".jpeg", ".png")):
-                    urls.append(u)
-    except Exception:
-        pass
+        for page_id, p in r.get("query", {}).get("pages", {}).items():
+            vid_id = f"wm_{page_id}"
+            if vid_id in used_ids:
+                continue
+            info = (p.get("videoinfo") or p.get("imageinfo") or [{}])[0]
+            url = info.get("url", "")
+            if url and any(url.lower().endswith(ext) for ext in (".mp4", ".webm", ".ogv")):
+                raw_dl = f"tmp_{page_id}.video"
+                vr = requests.get(url, headers=BROWSER_HEADERS, timeout=35)
+                if vr.status_code == 200 and len(vr.content) > 150_000:
+                    with open(raw_dl, "wb") as f:
+                        f.write(vr.content)
+                    subprocess.run(
+                        ["ffmpeg", "-y", "-i", raw_dl, "-t", "8", "-an", "-c:v", "libx264", "-preset", "veryfast", out_mp4],
+                        check=True,
+                    )
+                    used_ids.add(vid_id)
+                    print(f"Downloaded Wikimedia real video ({query}): {out_mp4}")
+                    return out_mp4
+    except Exception as e:
+        print(f"Wikimedia video warning ({query}): {e}")
+    return None
 
-    try:
-        q_enc = urllib.parse.quote_plus(f"{query} India photo")
-        resp = requests.get(
-            f"https://www.bing.com/images/search?q={q_enc}&qft=+filterui:imagesize-large+filterui:photo-photo",
-            headers=BROWSER_HEADERS,
-            timeout=10,
-        )
-        found = re.findall(r'murl&quot;:&quot;(https?://[^&]+?\.(?:jpg|jpeg|png))', resp.text, re.I)
-        for u in found:
-            if u not in urls:
-                urls.append(u)
-    except Exception:
-        pass
-    return urls
 
+def gather_scene_videos(scenes, category="NELLORE CITY"):
+    video_paths = []
+    used_ids = set()
 
-def gather_scene_visuals(scenes):
-    image_paths = []
-    used_urls = set()
+    fallbacks = {
+        "CRICKET": ["cricket", "stadium", "sports", "India"],
+        "TOLLYWOOD": ["cinema", "theater", "festival", "India"],
+        "JOBS ALERT": ["students", "university", "library", "office"],
+        "TRENDING": ["gold", "market", "traffic", "India"],
+        "NELLORE CITY": ["India street", "temple", "river", "cooking"],
+    }
+    cat_fallbacks = fallbacks.get(category.upper(), fallbacks["NELLORE CITY"])
 
     for idx, scene in enumerate(scenes):
-        out_file = f"scene_raw_{idx}.jpg"
-        v_prompt = scene.get("visual_prompt", "Sunny South Indian street in Nellore with clear blue sky, 9:16 vertical")
-        picked = generate_ai_vertical_visual(v_prompt, out_file)
+        out_mp4 = f"raw_clip_{idx}.mp4"
+        v_prompt = scene.get("video_prompt", "Cinematic sunlit street in Nellore India with traffic moving, 9:16 vertical")
+        picked = generate_veo_video_clip(v_prompt, out_mp4)
 
         if not picked:
-            q = scene.get("photo_query", "Andhra Pradesh landscape")
-            for u in search_fallback_photos(q) + search_fallback_photos("South India sunrise landscape"):
-                if u in used_urls:
-                    continue
-                try:
-                    r = requests.get(u, timeout=10, headers=BROWSER_HEADERS)
-                    if r.status_code == 200 and len(r.content) > 18000:
-                        img = Image.open(io.BytesIO(r.content)).convert("RGB")
-                        if img.width >= 450 and img.height >= 300:
-                            img.save(out_file, quality=95)
-                            picked = out_file
-                            used_urls.add(u)
-                            break
-                except Exception:
-                    continue
+            q = scene.get("video_query", cat_fallbacks[idx % len(cat_fallbacks)])
+            picked = search_wikimedia_video_clip(q, out_mp4, used_ids)
+        if not picked:
+            picked = search_wikimedia_video_clip(cat_fallbacks[idx % len(cat_fallbacks)], out_mp4, used_ids)
+        if not picked:
+            picked = search_wikimedia_video_clip("India", out_mp4, used_ids)
 
         if picked:
-            image_paths.append(picked)
-        elif image_paths:
-            image_paths.append(image_paths[-1])
+            video_paths.append(picked)
+        elif video_paths:
+            video_paths.append(video_paths[-1])
+        else:
+            raise RuntimeError("Could not generate or download any video clips.")
 
-    return image_paths
+    return video_paths
 
 
 def load_font(size, script="telugu"):
@@ -330,44 +336,22 @@ def draw_shaped_text(draw, xy, text, font, fill):
         draw.text(xy, text, fill=fill, font=font)
 
 
-def render_auto_reel_frame(bg_img_path, hook_te, caption_words, highlight_idx, show_hook, out_png):
-    """
-    Exact visual layout of the Auto Drivers / Chepala Pulusu reels on @nelloredaily:
-    - 100% full-bleed 1080x1920 vibrant scene (no boxes/borders)
-    - Top-left subtle '• NELLORE DAILY' watermark
-    - Big bold white Telugu hook headline in the upper third ('అదిరిపోయే శుభవార్త!')
-    - Sleek translucent dark pill at the bottom with live yellow active-word karaoke highlight
-    """
-    src = Image.open(bg_img_path).convert("RGB")
-    src = ImageEnhance.Color(src).enhance(1.15)
-    src = ImageEnhance.Contrast(src).enhance(1.06)
-
-    scale = max(1080 / src.width, 1920 / src.height)
-    resized = src.resize((int(src.width * scale), int(src.height * scale)), Image.LANCZOS)
-    left = (resized.width - 1080) // 2
-    top = (resized.height - 1920) // 2
-    canvas = resized.crop((left, top, left + 1080, top + 1920)).convert("RGBA")
-
-    # Subtle top sky darkening so white hook text & watermark pop naturally
-    grad = Image.new("RGBA", (1080, 1920), (0, 0, 0, 0))
-    gdraw = ImageDraw.Draw(grad)
-    for y in range(0, 620):
-        alpha = int(105 * (1 - y / 620))
-        gdraw.line([(0, y), (1080, y)], fill=(0, 0, 0, alpha))
-    for y in range(1420, 1920):
-        prog = (y - 1420) / 500
-        alpha = int(145 * prog)
-        gdraw.line([(0, y), (1080, y)], fill=(0, 0, 0, alpha))
-    canvas = Image.alpha_composite(canvas, grad)
-
+def render_transparent_overlay(hook_te, caption_words, highlight_idx, show_hook, out_png):
+    canvas = Image.new("RGBA", (1080, 1920), (0, 0, 0, 0))
     draw = ImageDraw.Draw(canvas)
 
-    # 1. Top-Left Minimalist Watermark ('• NELLORE DAILY')
+    for y in range(0, 520):
+        alpha = int(115 * (1 - y / 520))
+        draw.line([(0, y), (1080, y)], fill=(0, 0, 0, alpha))
+    for y in range(1450, 1920):
+        prog = (y - 1450) / 470
+        alpha = int(145 * prog)
+        draw.line([(0, y), (1080, y)], fill=(0, 0, 0, alpha))
+
     wm_font = load_font(25, "english")
     draw.ellipse([72, 86, 86, 100], fill=(250, 204, 21, 245))
-    draw.text((98, 79), "NELLORE DAILY", fill=(255, 255, 255, 235), font=wm_font)
+    draw.text((98, 79), "NELLORE DAILY", fill=(255, 255, 255, 240), font=wm_font)
 
-    # 2. Big Bold Telugu Hook Headline in Upper Third (Scene 1 & 2, just like 'అదిరిపోయే శుభవార్త!')
     if show_hook and hook_te:
         hook_font = load_font(74, "telugu")
         words = hook_te.split()
@@ -387,11 +371,10 @@ def render_auto_reel_frame(bg_img_path, hook_te, caption_words, highlight_idx, s
         for line in lines[:2]:
             bbox = draw.textbbox((0, 0), line, font=hook_font)
             hx = (1080 - (bbox[2] - bbox[0])) // 2
-            draw_shaped_text(draw, (hx + 3, hy + 4), line, hook_font, (0, 0, 0, 145))
+            draw_shaped_text(draw, (hx + 3, hy + 4), line, hook_font, (0, 0, 0, 165))
             draw_shaped_text(draw, (hx, hy), line, hook_font, (255, 255, 255, 255))
             hy += 96
 
-    # 3. Bottom Translucent Pill with Live Word-by-Word Yellow Highlight
     if caption_words:
         cap_font = load_font(44, "telugu")
         space_w = draw.textbbox((0, 0), " ", font=cap_font)[2]
@@ -406,7 +389,7 @@ def render_auto_reel_frame(bg_img_path, hook_te, caption_words, highlight_idx, s
         draw.rounded_rectangle(
             [px1, py1, px1 + pill_w, py1 + pill_h],
             radius=20,
-            fill=(15, 18, 25, 168),
+            fill=(15, 18, 25, 175),
         )
 
         cx = (1080 - total_w) // 2
@@ -416,11 +399,10 @@ def render_auto_reel_frame(bg_img_path, hook_te, caption_words, highlight_idx, s
             draw_shaped_text(draw, (cx, cy), word, cap_font, color)
             cx += ww + space_w
 
-    canvas.convert("RGB").save(out_png, quality=95)
+    canvas.save(out_png)
 
 
 async def generate_voice_with_word_timings(scenes, out_audio="voice.mp3"):
-    """Generates natural Telugu voiceover + exact word-level timestamps for karaoke captions."""
     full_script = " ".join(s["narration_te"].strip() for s in scenes)
     full_script = re.sub(r"#\S+", "", full_script)
     full_script = re.sub(r"[•|★☆🔥⚠️✅📍📅⏰🎬🏏💼👇]", " ", full_script)
@@ -447,7 +429,6 @@ async def generate_voice_with_word_timings(scenes, out_audio="voice.mp3"):
     ).decode().strip()
     total_dur = max(float(probe), 10.0)
 
-    # Fallback evenly spaced word timings if WordBoundary events are sparse
     if len(word_events) < 5:
         words = full_script.split()
         step = total_dur / max(1, len(words))
@@ -459,14 +440,34 @@ async def generate_voice_with_word_timings(scenes, out_audio="voice.mp3"):
     return total_dur, word_events
 
 
-def build_karaoke_cinema_reel(scenes, total_dur, word_events, image_paths, hook_te, bgm_path=None, out_video="reel.mp4"):
-    """Builds smooth zoomed scenes + live word-highlighted karaoke captions just like the Auto reel."""
-    fps = 24
-    total_frames = int(total_dur * fps)
-    num_scenes = len(image_paths)
-    frames_per_scene = max(1, total_frames // num_scenes)
+def build_real_video_reel(scenes, total_dur, word_events, video_paths, hook_te, bgm_path=None, out_video="reel.mp4"):
+    num_scenes = len(video_paths)
+    scene_dur = total_dur / num_scenes
+    norm_clips = []
 
-    # Group words into 4-word caption chunks
+    for idx, vpath in enumerate(video_paths):
+        norm_out = f"norm_{idx}.mp4"
+        cmd = [
+            "ffmpeg", "-y", "-stream_loop", "-1", "-i", vpath,
+            "-t", f"{scene_dur:.2f}",
+            "-vf", "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,fps=30,format=yuv420p",
+            "-an", "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", norm_out,
+        ]
+        subprocess.run(cmd, check=True)
+        norm_clips.append(norm_out)
+
+    with open("concat.txt", "w") as cf:
+        for nc in norm_clips:
+            cf.write(f"file '{nc}'\n")
+    subprocess.run(
+        ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", "concat.txt", "-c", "copy", "base_video.mp4"],
+        check=True,
+    )
+
+    ov_fps = 10
+    total_ov_frames = int(total_dur * ov_fps) + 1
+    hook_end_t = scene_dur * 2.0
+
     chunks = []
     for i in range(0, len(word_events), 4):
         group = word_events[i : i + 4]
@@ -477,17 +478,12 @@ def build_karaoke_cinema_reel(scenes, total_dur, word_events, image_paths, hook_
             "end_t": group[-1]["end"] + 0.35,
         })
 
-    # Pre-render static scene bases (with and without hook) so frame rendering is ultra-fast
-    os.makedirs("frames", exist_ok=True)
-    rendered_cache = {}
-
-    for f_idx in range(total_frames):
-        t = f_idx / fps
-        scene_idx = min(num_scenes - 1, f_idx // frames_per_scene)
-        show_hook = scene_idx <= 1
-
-        active_chunk = None
-        active_word_idx = -1
+    os.makedirs("ov_frames", exist_ok=True)
+    cache = {}
+    for f_idx in range(total_ov_frames):
+        t = f_idx / ov_fps
+        show_hook = t <= hook_end_t
+        active_chunk, active_word_idx = None, -1
         for c_idx, ch in enumerate(chunks):
             if ch["start_t"] <= t <= ch["end_t"]:
                 active_chunk = c_idx
@@ -496,53 +492,42 @@ def build_karaoke_cinema_reel(scenes, total_dur, word_events, image_paths, hook_
                         active_word_idx = w_i
                 break
 
-        cache_key = (scene_idx, show_hook, active_chunk, active_word_idx)
-        if cache_key not in rendered_cache:
-            cached_png = f"frames/base_{scene_idx}_{int(show_hook)}_{active_chunk}_{active_word_idx}.png"
+        key = (show_hook, active_chunk, active_word_idx)
+        if key not in cache:
+            cached_png = f"ov_frames/cache_{int(show_hook)}_{active_chunk}_{active_word_idx}.png"
             words_list = chunks[active_chunk]["words"] if active_chunk is not None else []
-            render_auto_reel_frame(
-                image_paths[scene_idx],
-                hook_te,
-                words_list,
-                active_word_idx,
-                show_hook,
-                cached_png,
-            )
-            rendered_cache[cache_key] = cached_png
+            render_transparent_overlay(hook_te, words_list, active_word_idx, show_hook, cached_png)
+            cache[key] = cached_png
 
-        # Subtle smooth zoom progression per scene
-        local_f = f_idx % frames_per_scene
-        zoom = 1.0 + 0.06 * (local_f / max(1, frames_per_scene))
-        frame_img = Image.open(rendered_cache[cache_key])
-        if zoom > 1.002:
-            zw, zh = int(1080 * zoom), int(1920 * zoom)
-            z_img = frame_img.resize((zw, zh), Image.BILINEAR)
-            lx, ty = (zw - 1080) // 2, (zh - 1920) // 2
-            frame_img = z_img.crop((lx, ty, lx + 1080, ty + 1920))
-        frame_img.save(f"frames/f_{f_idx:05d}.jpg", quality=92)
-
-    subprocess.run(
-        [
-            "ffmpeg", "-y", "-framerate", str(fps), "-i", "frames/f_%05d.jpg",
-            "-c:v", "libx264", "-profile:v", "high", "-level", "4.1",
-            "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p", "stitched.mp4",
-        ],
-        check=True,
-    )
+        os.symlink(os.path.abspath(cache[key]), f"ov_frames/ov_{f_idx:05d}.png")
 
     if bgm_path and os.path.exists(bgm_path):
         cmd_final = [
-            "ffmpeg", "-y", "-i", "stitched.mp4", "-i", "voice.mp3", "-stream_loop", "-1",
-            "-i", bgm_path, "-filter_complex",
-            "[2:a]volume=0.14[bgm];[1:a][bgm]amix=inputs=2:duration=first:dropout_transition=2[aout]",
-            "-map", "0:v", "-map", "[aout]", "-c:v", "copy", "-c:a", "aac", "-ar", "44100",
-            "-ac", "2", "-b:a", "192k", "-movflags", "+faststart", "-shortest", out_video,
+            "ffmpeg", "-y",
+            "-i", "base_video.mp4",
+            "-framerate", str(ov_fps), "-i", "ov_frames/ov_%05d.png",
+            "-i", "voice.mp3",
+            "-stream_loop", "-1", "-i", bgm_path,
+            "-filter_complex",
+            "[0:v][1:v]overlay=0:0:shortest=1[vout];[3:a]volume=0.14[bgm];[2:a][bgm]amix=inputs=2:duration=first:dropout_transition=2[aout]",
+            "-map", "[vout]", "-map", "[aout]",
+            "-c:v", "libx264", "-profile:v", "high", "-level", "4.1",
+            "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
+            "-c:a", "aac", "-ar", "44100", "-ac", "2", "-b:a", "192k",
+            "-movflags", "+faststart", "-shortest", out_video,
         ]
     else:
         cmd_final = [
-            "ffmpeg", "-y", "-i", "stitched.mp4", "-i", "voice.mp3",
-            "-map", "0:v", "-map", "1:a", "-c:v", "copy", "-c:a", "aac", "-ar", "44100",
-            "-ac", "2", "-b:a", "192k", "-movflags", "+faststart", "-shortest", out_video,
+            "ffmpeg", "-y",
+            "-i", "base_video.mp4",
+            "-framerate", str(ov_fps), "-i", "ov_frames/ov_%05d.png",
+            "-i", "voice.mp3",
+            "-filter_complex", "[0:v][1:v]overlay=0:0:shortest=1[vout]",
+            "-map", "[vout]", "-map", "2:a",
+            "-c:v", "libx264", "-profile:v", "high", "-level", "4.1",
+            "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
+            "-c:a", "aac", "-ar", "44100", "-ac", "2", "-b:a", "192k",
+            "-movflags", "+faststart", "-shortest", out_video,
         ]
     subprocess.run(cmd_final, check=True)
 
@@ -642,15 +627,16 @@ def main():
     story = generate_storyboard_with_gemini(articles)
     print("Selected Hook:", story.get("hook_te"))
 
-    image_paths = gather_scene_visuals(story["scenes"])
+    cat_badge = story.get("category_badge", "NELLORE CITY")
+    video_paths = gather_scene_videos(story["scenes"], category=cat_badge)
     total_dur, word_events = asyncio.run(generate_voice_with_word_timings(story["scenes"]))
     bgm_file = pick_bgm(story.get("bgm_mood", "emotional"))
 
-    build_karaoke_cinema_reel(
+    build_real_video_reel(
         scenes=story["scenes"],
         total_dur=total_dur,
         word_events=word_events,
-        image_paths=image_paths,
+        video_paths=video_paths,
         hook_te=story.get("hook_te", "తాజా వార్త!"),
         bgm_path=bgm_file,
     )
@@ -677,7 +663,7 @@ def main():
 
     history.append(story["selected_link"])
     save_history(history)
-    print(f"Hourly Auto-Style Cinema Reel completed! (IG={ig_ok}, FB={fb_ok})")
+    print(f"Hourly Real-Video Reel completed! (IG={ig_ok}, FB={fb_ok})")
 
 
 if __name__ == "__main__":
