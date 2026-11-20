@@ -4,6 +4,7 @@ import io
 import json
 import time
 import html
+import base64
 import urllib.parse
 import asyncio
 import random
@@ -28,8 +29,11 @@ IST = timezone(timedelta(hours=5, minutes=30))
 HISTORY_FILE = "posted_history.json"
 
 BROWSER_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                  "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
     "Accept-Language": "te-IN,te;q=0.9,en-US;q=0.8,en;q=0.7",
 }
 
@@ -212,12 +216,43 @@ Return strictly valid JSON with keys:
     raise RuntimeError(f"All Gemini models failed: {last_err}")
 
 
+def resolve_real_article_url(url):
+    """Unwraps Google News RSS redirect URLs to the real publisher article URL."""
+    if not url or "news.google.com" not in url:
+        return url
+    try:
+        # 1. Try decoding base64 token embedded in Google News article URL
+        parsed = urllib.parse.urlparse(url)
+        parts = [p for p in parsed.path.split("/") if p]
+        if parts:
+            token = parts[-1]
+            padded = token + "=" * ((4 - len(token) % 4) % 4)
+            raw = base64.urlsafe_b64decode(padded)
+            m = re.search(rb"https?://[^\x00-\x1f\x7f\"'<>]+", raw)
+            if m:
+                decoded_url = m.group(0).decode("utf-8", errors="ignore")
+                if "google.com" not in decoded_url:
+                    return decoded_url
+
+        # 2. Fallback: parse canonical/meta refresh link from Google News page
+        r = requests.get(url, headers=BROWSER_HEADERS, timeout=10, allow_redirects=True)
+        if "news.google.com" not in r.url:
+            return r.url
+        m2 = re.search(r'data-n-au=["\'](https?://[^"\']+)["\']', r.text)
+        if m2:
+            return html.unescape(m2.group(1))
+    except Exception as e:
+        print(f"Google News URL decode warning: {e}")
+    return url
+
+
 def extract_article_og_image(article_url):
-    """Follows redirects and extracts the real news article cover image (og:image)."""
-    if not article_url:
+    """Resolves the publisher article and extracts its real cover photo (og:image)."""
+    real_url = resolve_real_article_url(article_url)
+    if not real_url or "news.google.com" in real_url:
         return ""
     try:
-        r = requests.get(article_url, headers=BROWSER_HEADERS, timeout=12, allow_redirects=True)
+        r = requests.get(real_url, headers=BROWSER_HEADERS, timeout=12, allow_redirects=True)
         html_text = r.text
         patterns = [
             r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']',
@@ -231,14 +266,15 @@ def extract_article_og_image(article_url):
                 img_url = html.unescape(m.group(1)).strip()
                 if img_url.startswith("//"):
                     img_url = "https:" + img_url
-                if img_url.startswith("http") and "google.com" not in img_url and "gstatic.com" not in img_url:
+                bad_domains = ("google.com", "gstatic.com", "googleusercontent.com", "logo", "favicon")
+                if img_url.startswith("http") and not any(b in img_url.lower() for b in bad_domains):
                     return img_url
     except Exception as e:
         print(f"og:image extraction warning: {e}")
     return ""
 
 
-def search_web_images(query, max_results=12):
+def search_web_images(query, max_results=14):
     """Searches Wikimedia Commons + Bing Images for real, high-resolution photos."""
     urls = []
     short_q = " ".join(query.split()[:4])
@@ -292,7 +328,6 @@ def download_verified_photo(url, out_path):
         r = requests.get(url, timeout=10, headers=BROWSER_HEADERS)
         if r.status_code == 200 and len(r.content) > 15000:
             img = Image.open(io.BytesIO(r.content)).convert("RGB")
-            # Reject tiny icons, banners, or extreme aspect ratios
             if img.width >= 480 and img.height >= 320:
                 aspect = img.width / float(img.height)
                 if 0.4 <= aspect <= 2.6:
@@ -341,7 +376,6 @@ def gather_scene_images(scenes, primary_article_image=""):
         if picked:
             image_paths.append(picked)
         elif image_paths:
-            # Reuse an earlier verified photo rather than creating a blank blue screen
             image_paths.append(image_paths[-1])
         else:
             img = Image.new("RGB", (1080, 1920), (18, 26, 46))
@@ -366,7 +400,6 @@ def load_font(size, script="telugu"):
     for p in paths:
         if os.path.exists(p):
             try:
-                # Enable Raqm complex script shaping for Telugu vowels & conjuncts
                 return ImageFont.truetype(p, size, layout_engine=ImageFont.Layout.RAQM)
             except Exception:
                 return ImageFont.truetype(p, size)
@@ -403,7 +436,7 @@ def compose_scene_frame(bg_img_path, badge, headline_te, subtitle_te, scene_idx,
     src = ImageEnhance.Color(src).enhance(1.16)
     src = ImageEnhance.Sharpness(src).enhance(1.15)
 
-    # 1. Blurred atmospheric full-bleed background (prevents awkward side cropping)
+    # 1. Blurred atmospheric full-bleed background
     bg_ratio = max(1080 / src.width, 1920 / src.height)
     bg_resized = src.resize((int(src.width * bg_ratio), int(src.height * bg_ratio)), Image.LANCZOS)
     b_left = (bg_resized.width - 1080) // 2
@@ -413,12 +446,10 @@ def compose_scene_frame(bg_img_path, badge, headline_te, subtitle_te, scene_idx,
         .filter(ImageFilter.GaussianBlur(radius=24))
         .convert("RGBA")
     )
-
-    # Darken background slightly so foreground card pops
     dark_tint = Image.new("RGBA", (1080, 1920), (8, 12, 24, 115))
     canvas = Image.alpha_composite(canvas, dark_tint)
 
-    # 2. Sharp, well-framed news photo card in the center-upper stage
+    # 2. Sharp, framed news photo card in center-upper stage
     fg_w = 990
     fg_h = 840
     fg_ratio = max(fg_w / src.width, fg_h / src.height)
@@ -427,7 +458,6 @@ def compose_scene_frame(bg_img_path, badge, headline_te, subtitle_te, scene_idx,
     f_top = (fg_resized.height - fg_h) // 2
     fg_crop = fg_resized.crop((f_left, f_top, f_left + fg_w, f_top + fg_h)).convert("RGBA")
 
-    # Rounded mask for the photo frame
     mask = Image.new("L", (fg_w, fg_h), 0)
     ImageDraw.Draw(mask).rounded_rectangle([0, 0, fg_w, fg_h], radius=28, fill=255)
     canvas.paste(fg_crop, (45, 360), mask)
@@ -468,9 +498,8 @@ def compose_scene_frame(bg_img_path, badge, headline_te, subtitle_te, scene_idx,
     # 5. Story Headline Banner above Photo
     head_font = load_font(42, "telugu")
     head_lines = wrap_text(draw, headline_te, head_font, 980)
-    hy = 258
     for hline in head_lines[:1]:
-        draw_shaped_text(draw, (52, hy), hline, head_font, (250, 204, 21, 255))
+        draw_shaped_text(draw, (52, 258), hline, head_font, (250, 204, 21, 255))
 
     # 6. Bottom Newsroom Subtitle Card (above Instagram Reels UI safe zone)
     sub_font = load_font(52, "telugu")
@@ -487,7 +516,6 @@ def compose_scene_frame(bg_img_path, badge, headline_te, subtitle_te, scene_idx,
         outline=(250, 204, 21, 255),
         width=4,
     )
-    # Red accent stripe on the left of subtitle card
     draw.rounded_rectangle([45, card_top + 18, 61, card_bottom - 18], radius=8, fill=(220, 38, 38, 255))
 
     y = card_top + 24
@@ -551,8 +579,8 @@ def build_fast_cinema_video(scenes, durations, image_paths, badge, headline_te, 
 
         cmd = [
             "ffmpeg", "-y", "-loop", "1", "-framerate", "30", "-t", f"{dur:.2f}",
-            "-i", composed_png, "-vf", vf, "-c:v", "libx264", "-preset", "veryfast",
-            "-crf", "20", "-pix_fmt", "yuv420p", clip_out,
+            "-i", composed_png, "-vf", vf, "-c:v", "libx264", "-profile:v", "high",
+            "-level", "4.1", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p", clip_out,
         ]
         subprocess.run(cmd, check=True)
         scene_clips.append(clip_out)
@@ -577,8 +605,8 @@ def build_fast_cinema_video(scenes, durations, image_paths, badge, headline_te, 
     subprocess.run(
         [
             "ffmpeg", "-y", *inputs, "-filter_complex", ";".join(filter_parts),
-            "-map", "[vmerged]", "-c:v", "libx264", "-preset", "veryfast",
-            "-crf", "20", "-pix_fmt", "yuv420p", "stitched.mp4",
+            "-map", "[vmerged]", "-c:v", "libx264", "-profile:v", "high",
+            "-level", "4.1", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p", "stitched.mp4",
         ],
         check=True,
     )
@@ -588,14 +616,14 @@ def build_fast_cinema_video(scenes, durations, image_paths, badge, headline_te, 
             "ffmpeg", "-y", "-i", "stitched.mp4", "-i", "voice.mp3", "-stream_loop", "-1",
             "-i", bgm_path, "-filter_complex",
             "[2:a]volume=0.14[bgm];[1:a][bgm]amix=inputs=2:duration=first:dropout_transition=2[aout]",
-            "-map", "0:v", "-map", "[aout]", "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
-            "-shortest", out_video,
+            "-map", "0:v", "-map", "[aout]", "-c:v", "copy", "-c:a", "aac", "-ar", "44100",
+            "-ac", "2", "-b:a", "192k", "-movflags", "+faststart", "-shortest", out_video,
         ]
     else:
         cmd_final = [
             "ffmpeg", "-y", "-i", "stitched.mp4", "-i", "voice.mp3",
-            "-map", "0:v", "-map", "1:a", "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
-            "-shortest", out_video,
+            "-map", "0:v", "-map", "1:a", "-c:v", "copy", "-c:a", "aac", "-ar", "44100",
+            "-ac", "2", "-b:a", "192k", "-movflags", "+faststart", "-shortest", out_video,
         ]
     subprocess.run(cmd_final, check=True)
 
@@ -701,7 +729,6 @@ def main():
             primary_img = art.get("rss_image", "")
             break
 
-    # Scrape the real news article og:image if RSS didn't include a photo
     if not primary_img:
         primary_img = extract_article_og_image(story["selected_link"])
 
