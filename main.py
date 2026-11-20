@@ -68,7 +68,7 @@ POLITICS_BLOCKLIST = [
     "bjp", "congress", "mla", "mp", "minister", "assembly", "election", "politics",
 ]
 
-GEMINI_MODELS = ["gemini-2.5-flash", "gemini-2.5-flash-lite"]
+GEMINI_MODELS = ["gemini-3.5-flash", "gemini-3.5-flash-lite"]
 XFADE_TRANSITIONS = ["smoothleft", "dissolve", "wipeleft", "slideright"]
 
 
