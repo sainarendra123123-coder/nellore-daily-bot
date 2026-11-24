@@ -1,0 +1,93 @@
+name: Nellore AI footage review
+on:
+  push:
+    branches: [nellore-daily-ai-footage]
+    paths: [.github/workflows/ai_footage_review.yml]
+permissions:
+  contents: read
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg fonts-noto-core
+          pip install edge-tts pillow
+      - name: Edit motion footage and verify export
+        env:
+          CLIP_URL: "https://videogen.vidiq.com/f7fd0703-33f1-4cbb-8152-8c437b772a91/9de66e36-7d64-4294-9e48-10ec006f1288_minimax-466941528740129_879afaeb-7546-4416-96db-b13276c1ef99.mp4"
+        run: |
+          curl --fail --silent --show-error --location --max-time 75 --output raw.mp4 "$CLIP_URL"
+          mkdir -p output
+          cat > render.py <<'PY'
+          import asyncio, json, subprocess as sp
+          from pathlib import Path
+          from PIL import Image, ImageDraw, ImageFont
+          import edge_tts
+
+          lines = [
+              'నెల్లూరు పోలీస్ గ్రౌండ్‌లో కొత్త కమాండ్ సెంటర్ ప్రారంభమైంది.',
+              'సీసీ కెమెరాలు, డ్రోన్ల సమాచారాన్ని ఒకే చోట పర్యవేక్షిస్తారు.',
+              'చిన్నబజార్ కొత్త పోలీస్ స్టేషన్ భవనాన్నీ డీజీపీ ప్రారంభించారు.',
+          ]
+          async def voices():
+              await asyncio.gather(*(edge_tts.Communicate(line,'te-IN-ShrutiNeural',rate='+7%').save(f'a{i}.mp3') for i,line in enumerate(lines)))
+          asyncio.run(voices())
+          face = '/usr/share/fonts/truetype/noto/NotoSansTelugu-Regular.ttf'
+          def font(size):
+              return ImageFont.truetype(face,size,layout_engine=ImageFont.Layout.RAQM)
+          def run(*args):
+              return sp.run(args,check=True,stdout=sp.PIPE,text=True).stdout
+          def center(d, y, text, f, color):
+              l,t,r,b = d.textbbox((0,0), text,font=f)
+              assert r-l <= 820, (text,r-l)
+              d.text(((1080-(r-l))/2-l,y-t),text,font=f,fill=color)
+          for i,line in enumerate(lines):
+              im=Image.new('RGBA',(1080,1920))
+              d=ImageDraw.Draw(im)
+              d.rounded_rectangle((170,155,910,310), 26, fill=(7,24,40,235))
+              center(d,169,'నెల్లూరు డైలీ',font(44),'white')
+              center(d,239,'ఏఐతో రూపొందించిన దృశ్యాలు',font(36),'#72eed6')
+              words=line.split()
+              rows=['']
+              for word in words:
+                  candidate=(rows[-1]+' '+word).strip()
+                  if d.textlength(candidate,font=font(53)) > 810 and rows[-1]:
+                      rows.append(word)
+                  else:
+                      rows[-1]=candidate
+              assert len(rows)<=3, rows
+              d.rounded_rectangle((92,1285,988,1340+len(rows)*68),29,fill=(7,24,40,240))
+              for j,row in enumerate(rows):
+                  center(d,1315+j*68,row,font(53),'white')
+              im.save(f'o{i}.png')
+              measured=float(run('ffprobe','-v','error','-show_entries','format=duration','-of','csv=p=0',f'a{i}.mp3'))
+              assert 1.2 < measured < 5.8, measured
+              speed=max(1,measured/4.70)
+              run('ffmpeg','-v','error','-y','-ss',str(i*5),'-i','raw.mp4','-i',f'o{i}.png','-i',f'a{i}.mp3',
+                  '-filter_complex','[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,fps=30,tpad=stop_mode=clone:stop_duration=0.3[v];[v][1:v]overlay[out]',
+                  '-map','[out]','-map','2:a:0','-af',f'atempo={speed},adelay=130:all=1,loudnorm=I=-16:TP=-1.5:LRA=8,apad',
+                  '-t','5','-c:v','libx264','-preset','veryfast','-crf','19','-pix_fmt','yuv420p','-g','60',
+                  '-c:a','aac','-ar','48000','-ac','2','-b:a','160k',f'c{i}.mp4')
+              for j,second in enumerate(('1','3.5')):
+                  run('ffmpeg','-v','error','-y','-ss',second,'-i',f'c{i}.mp4','-frames:v','1',f'output/review-{i+1}-{j+1}.jpg')
+          Path('concat.txt').write_text("file 'c0.mp4'\nfile 'c1.mp4'\nfile 'c2.mp4'\n")
+          final='output/nellore-ai-reel.mp4'
+          run('ffmpeg','-v','error','-y','-f','concat','-safe','1','-i','concat.txt','-c','copy','-movflags','+faststart',final)
+          result=json.loads(run('ffprobe','-v','error','-show_streams','-show_format','-of','json',final))
+          v,a=result['streams']
+          assert (v['width'],v['height'],v['codec_name'],a['codec_name']) == (1080,1920,'h264','aac')
+          assert 14.7 < float(result['format']['duration']) < 15.4
+          run('ffmpeg','-v','error','-xerror','-i',final,'-f','null','-')
+          print('15-second vertical motion footage validated with Telugu neural narration and three caption cues.')
+          PY
+          python render.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nellore-ai-reel
+          path: output/
+          if-no-files-found: error
