@@ -1,0 +1,41 @@
+name: Nellore Daily standalone Instagram
+on:
+  schedule:
+    - cron: '0 5-23 * * *'
+      timezone: Asia/Kolkata
+  workflow_dispatch:
+    inputs:
+      live:
+        description: Publish a ready reel now
+        type: boolean
+        default: false
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/nellore_standalone.yml
+      - reels/publish.mjs
+
+permissions:
+  contents: write
+
+concurrency:
+  group: nellore-standalone-instagram
+  cancel-in-progress: false
+
+jobs:
+  queue:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Verify or publish one reviewed reel
+        env:
+          META_TOKEN: ${{ secrets.META_ACCESS_TOKEN }}
+          IG_USER_ID: ${{ secrets.IG_USER_ID }}
+          LIVE: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.live) }}
+        run: node reels/publish.mjs
