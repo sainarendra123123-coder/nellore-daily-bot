@@ -1,0 +1,19 @@
+[Unit]
+Description=Nellore Daily scheduled check
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=nellore-daily
+WorkingDirectory=/opt/nellore-daily
+StateDirectory=nellore-daily
+Environment=NELLORE_STATE=/var/lib/nellore-daily
+Environment=PYTHON=/opt/nellore-daily/.venv/bin/python
+EnvironmentFile=-/etc/nellore-daily.env
+ExecStart=/usr/bin/node daily/run.mjs --scheduled
+TimeoutStartSec=18min
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true

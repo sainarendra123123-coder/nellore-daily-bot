@@ -1,0 +1,11 @@
+[Unit]
+Description=Check Nellore news and jobs every 30 minutes during the IST publishing window
+
+[Timer]
+OnCalendar=*-*-* 05..22:00,30:00 Asia/Kolkata
+OnCalendar=*-*-* 23:00:00 Asia/Kolkata
+AccuracySec=1s
+Unit=nellore-daily.service
+
+[Install]
+WantedBy=timers.target

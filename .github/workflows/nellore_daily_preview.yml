@@ -1,0 +1,48 @@
+name: Nellore Daily preview
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  preview:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: |
+          node --test daily/policy.test.mjs
+          systemd-analyze calendar '*-*-* 05..22:00,30:00 Asia/Kolkata' '*-*-* 23:00:00 Asia/Kolkata'
+      - run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg espeak-ng fonts-noto-core
+          python -m pip install -r requirements.txt
+      - run: |
+          node daily/run.mjs --fixture
+          test -s .nellore/fixture/poster.jpg
+          test -s .nellore/fixture/subtitles.srt
+          test -s .nellore/fixture/caption.txt
+          ffprobe -v error -show_entries stream=codec_type,codec_name,width,height .nellore/fixture/reel.mp4
+      - name: Check reachability of public sources
+        run: |
+          python daily/collect.py "$(TZ=Asia/Kolkata date +%F)" | python -c 'import json,sys; x=json.load(sys.stdin); print("Dated feed entries:", len(x["news"])); print("Verified open notices:",len(x["jobs"])); print("Source errors:",x["errors"])'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nellore-daily-preview
+          path: |
+            .nellore/fixture/poster.jpg
+            .nellore/fixture/reel.mp4
+            .nellore/fixture/subtitles.srt
+            .nellore/fixture/caption.txt
+          if-no-files-found: error
+          retention-days: 5
