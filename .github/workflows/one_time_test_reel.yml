@@ -1,0 +1,89 @@
+name: Nellore Daily one-time test reel
+on:
+  push:
+    branches: [nellore-daily-one-time-reel-14961620666]
+    paths: [.github/workflows/one_time_test_reel.yml]
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  publish:
+    if: github.run_number == 1 && github.run_attempt == 1
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: nellore-daily-preview
+          path: preview
+          github-token: ${{ github.token }}
+          run-id: 45479122529
+      - name: Publish the labeled preview once
+        env:
+          META_TOKEN: ${{ secrets.META_ACCESS_TOKEN }}
+          FB_PAGE_ID: ${{ secrets.FB_PAGE_ID }}
+          IG_USER_ID: ${{ secrets.IG_USER_ID }}
+        run: |
+          node --input-type=module <<'JS'
+          import { readFile } from 'node:fs/promises';
+          import { publishers } from './daily/meta.mjs';
+          const {META_TOKEN: token, FB_PAGE_ID: page, IG_USER_ID: ig} = process.env;
+          if (!token) throw new Error('Existing Meta access token is missing');
+          const version = 'v25.0';
+          const graph = 'https://graph.facebook.com/' + version;
+          const video = await readFile('preview/reel.mp4');
+          const caption = 'నెల్లూరు డైలీ 2.0 టెస్ట్ రీల్. ఇందులో చూపిన కథనం కల్పితం.';
+          const validId = value => /^\d+$/.test(value ?? '');
+          async function get(id, fields, credential) {
+            if (!validId(id)) throw new Error('Expected account ID is missing or invalid');
+            const response = await fetch(graph + '/' + id + '?' + new URLSearchParams({fields}), {
+              headers: {Authorization: 'Bearer ' + credential}, signal: AbortSignal.timeout(20000),
+            });
+            const result = await response.json();
+            if (!response.ok || result.error) {
+              throw new Error('Meta lookup failed (HTTP ' + response.status + ', code ' + (result.error?.code ?? 'unknown') + ', subcode ' + (result.error?.error_subcode ?? 'none') + ')');
+            }
+            return result;
+          }
+          const adapter = (pageToken, targetIg, targetPage) => publishers({
+            META_GRAPH_VERSION: version, IG_USER_ID: targetIg, FB_PAGE_ID: targetPage,
+            META_IG_TOKEN: token, META_PAGE_TOKEN: pageToken,
+          });
+          let failed = false;
+          try {
+            const profile = await get(ig, 'username', token);
+            if (profile.username?.toLowerCase() !== 'nelloredaily') throw new Error('Configured Instagram account is not @nelloredaily');
+            const id = await adapter(token, ig, '0').instagram(video, caption);
+            console.log('INSTAGRAM_PUBLISHED_ID=' + id);
+            try {
+              const result = await get(id, 'permalink', token);
+              if (result.permalink) console.log('INSTAGRAM_PERMALINK=' + result.permalink);
+            } catch {}
+          } catch (error) {
+            console.log('INSTAGRAM_UNCONFIRMED=' + error.message);
+            failed = true;
+          }
+          try {
+            const profile = await get(page, 'name,access_token', token);
+            if (profile.name?.toLowerCase().replace(/[^a-z]/g, '') !== 'nelloredaily' &&
+                !profile.name?.includes('నెల్లూరు డైలీ')) throw new Error('Configured Facebook Page does not match Nellore Daily');
+            const pageToken = profile.access_token || token;
+            if (profile.access_token) console.log('::add-mask::' + profile.access_token);
+            const id = await adapter(pageToken, '0', page).facebook(video, caption);
+            console.log('FACEBOOK_SUBMITTED_ID=' + id);
+            try {
+              const result = await get(id, 'permalink_url,status', pageToken);
+              if (result.permalink_url) console.log('FACEBOOK_PERMALINK=' + result.permalink_url);
+              if (result.status?.video_status) console.log('FACEBOOK_VIDEO_STATUS=' + result.status.video_status);
+            } catch {}
+          } catch (error) {
+            console.log('FACEBOOK_UNCONFIRMED=' + error.message);
+            failed = true;
+          }
+          if (failed) process.exitCode = 1;
+          JS
