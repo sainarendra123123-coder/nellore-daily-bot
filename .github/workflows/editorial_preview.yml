@@ -65,7 +65,7 @@ jobs:
                   d.rectangle((0, y, 1080, y+6), fill=(11+int(5*t),24+int(16*t),39+int(17*t)))
               d.rounded_rectangle((90, 145, 153, 208), 16, fill=teal)
               d.polygon([(107,191),(107,162),(115,162),(133,180),(133,162),(141,162),(141,192),(133,192),(115,174),(115,191)], fill=navy)
-              draw_text(d, 174, 156, 'NELLORE DAILY', 45, white)
+              draw_text(d, 174, 156, 'నెల్లూరు డైలీ', 45, white)
               draw_text(d, 92, 264, '24 నవంబర్ 2026  /  నెల్లూరు', 37, '#a5c4d1')
               d.line((92, 340, 988, 340), fill='#306071', width=3)
               draw_text(d, 92, 402, label, 52, teal)
@@ -99,7 +99,7 @@ jobs:
                   d.rectangle((502,1025,578,1131),fill='#27566a',outline=teal,width=5)
               d.rounded_rectangle((92, 1304, 988, 1573), 29, fill='#06101c')
               draw_text(d, 130, 1350, wrap(d, caption, 53), 53, white)
-              draw_text(d, 93, 1630, 'మూలాలు  /  The Hindu · పున్నమి', 34, '#a5c4d1')
+              draw_text(d, 93, 1598, 'మూలాలు  /  ది హిందూ, పున్నమి', 34, '#a5c4d1')
               for i in range(3):
                   d.rounded_rectangle((92+i*114,1701,194+i*114,1712),5,fill=teal if i <= scene else '#36586a')
               im.save(path,quality=94)
