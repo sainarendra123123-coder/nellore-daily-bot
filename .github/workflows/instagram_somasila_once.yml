@@ -1,0 +1,80 @@
+name: Publish reviewed Somasila reel to Instagram once
+on:
+  push:
+    branches: [nellore-daily-somasila-reel]
+    paths: [.github/workflows/instagram_somasila_once.yml]
+permissions:
+  actions: read
+  contents: read
+jobs:
+  publish:
+    if: github.run_number == 1 && github.run_attempt == 1
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Retrieve the reviewed final video
+        env:
+          REVIEWED_REEL_URL: "https://d2ol7oe51mr4n9.cloudfront.net/user_2xfGgiDpCSF0170YwbIfoJS9dhR/9d5e2c91-025b-40e5-a79c-ae066323d318.mp4"
+        run: |
+          mkdir -p preview
+          curl -fsSL --max-time 90 "$REVIEWED_REEL_URL" -o preview/reviewed-cut.mp4
+      - name: Publish only to the Nellore Daily Instagram account
+        env:
+          META_TOKEN: ${{ secrets.META_ACCESS_TOKEN }}
+          REEL_URL: "https://d2ol7oe51mr4n9.cloudfront.net/user_2xfGgiDpCSF0170YwbIfoJS9dhR/9d5e2c91-025b-40e5-a79c-ae066323d318.mp4"
+          IG_USER_ID: ${{ secrets.IG_USER_ID }}
+        run: |
+          node --input-type=module <<'JS'
+          const {META_TOKEN: token, IG_USER_ID: account} = process.env;
+          if (!token || !/^\d+$/.test(account ?? '')) throw new Error('Missing Instagram credentials');
+          const version = 'v25.0';
+          const graph = 'https://graph.facebook.com/' + version;
+          async function get(id, fields) {
+            const response = await fetch(graph + '/' + id + '?' + new URLSearchParams({fields}), {
+              headers: {Authorization: 'Bearer ' + token}, signal: AbortSignal.timeout(20000),
+            });
+            if (!response.ok) throw new Error('Instagram lookup failed (HTTP ' + response.status + ')');
+            return response.json();
+          }
+          const user = await get(account, 'username');
+          if (user.username?.toLowerCase() !== 'nelloredaily') throw new Error('Wrong Instagram account');
+          const caption = [
+            'సోమశిల జలాశయం | మన నెల్లూరు',
+            '',
+            'అనంతసాగరం మండలంలోని సోమశిల దగ్గర పెన్నా నదిపై ఈ ఆనకట్ట ఉంది. జలాశయ నీరు సాగుకు, కావలి పట్టణ తాగునీటి అవసరాలకు ఉపయోగపడుతుంది.',
+            '',
+            'మూలం: శ్రీ పొట్టి శ్రీరాములు నెల్లూరు జిల్లా అధికారిక వెబ్‌సైట్. దృశ్యాలు ఏఐతో రూపొందించినవి.',
+            'తాజా వార్తల కోసం నెల్లూరు డైలీని ఫాలో అవ్వండి.',
+            '#NelloreDaily #Somasila #Nellore',
+          ].join('\n');
+          async function post(path, fields) {
+            const res = await fetch(graph + '/' + path, {
+              method: 'POST', headers: {Authorization: 'Bearer ' + token},
+              body: new URLSearchParams(fields), signal: AbortSignal.timeout(30000),
+            });
+            const value = await res.json();
+            if (!res.ok || value.error) throw new Error(path.split('/').at(-1) + ' rejected with HTTP ' + res.status + ', code ' + (value.error?.code ?? 'unknown') + ', subcode ' + (value.error?.error_subcode ?? 'none'));
+            return value;
+          }
+          const {id: container} = await post(account + '/media', {media_type:'REELS',video_url:process.env.REEL_URL,caption});
+          if (!container) throw new Error('Missing media container');
+          let ready = false;
+          for (let i=0;i<36;i++) {
+            const status=await get(container,'status_code,status');
+            console.log('Container state: ' + status.status_code);
+            if (status.status_code === 'FINISHED') { ready=true; break; }
+            if (status.status_code === 'ERROR' || status.status_code === 'EXPIRED') throw new Error('Instagram media processing failed: ' + status.status_code);
+            await new Promise(resolve => setTimeout(resolve,5000));
+          }
+          if (!ready) throw new Error('Instagram media processing timed out');
+          const {id} = await post(account+'/media_publish',{creation_id:container});
+          if (!id) throw new Error('Missing published media ID');
+          console.log('INSTAGRAM_PUBLISHED_ID=' + id);
+          try {
+            const media = await get(id, 'permalink');
+            if (media.permalink) console.log('INSTAGRAM_PERMALINK=' + media.permalink);
+          } catch {}
+          JS
