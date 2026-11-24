@@ -8,7 +8,7 @@ permissions:
   contents: read
 jobs:
   publish:
-    if: github.run_number == 1 && github.run_attempt == 1
+    if: github.run_number == 2 && github.run_attempt == 1
     runs-on: ubuntu-latest
     timeout-minutes: 8
     steps:
@@ -23,6 +23,8 @@ jobs:
           run-id: 45483411184
       - name: Retain the two reviewed scenes and verify the final cut
         run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg
           ffmpeg -v error -y -i preview/nellore-ai-reel.mp4 -t 10.02 -c copy -movflags +faststart preview/reviewed-cut.mp4
           ffmpeg -v error -xerror -i preview/reviewed-cut.mp4 -f null -
       - name: Publish only to the Nellore Daily Instagram account
