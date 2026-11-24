@@ -14,9 +14,9 @@ from pypdf import PdfReader
 DISTRICT = "https://spsnellore.ap.gov.in/notice_category/recruitment/"
 OFFICIAL_HOSTS = {"spsnellore.ap.gov.in", "cdn.s3waas.gov.in"}
 FEEDS = {
-    "https://www.eenadu.net/rss/andhra-pradesh.xml": "eenadu.net",
-    "https://www.sakshi.com/rss/andhra-pradesh": "sakshi.com",
-    "https://telugu.samayam.com/rssfeedstopstories.cms": "telugu.samayam.com",
+    "https://tv9telugu.com/feed": "tv9telugu.com",
+    "https://ntvtelugu.com/feed": "ntvtelugu.com",
+    "https://vaartha.com/feed": "vaartha.com",
 }
 DATE = r"([0-9]{1,2}[./-][0-9]{1,2}[./-][0-9]{4})"
 CLOSING = re.compile(

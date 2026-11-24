@@ -72,7 +72,7 @@ export function editorial(item) {
   const label = item.kind === 'job' ? 'ఉద్యోగ సమాచారం' : 'నెల్లూరు వార్త';
   const segments = item.kind === 'job'
     ? ['నెల్లూరు జిల్లా ఉద్యోగ సమాచారం.', 'దరఖాస్తు వివరాలకు అధికారిక ప్రకటన చూడండి.',
-       'చివరి తేదీని గమనించండి.']
+       'దరఖాస్తుకు చివరి తేదీ ' + item.deadline.split('-').reverse().join('/') + '.']
     : ['నెల్లూరు నుంచి తాజా సమాచారం.', item.title];
   const details = item.kind === 'job' ? [
     'చివరి తేదీ • ' + item.deadline,
