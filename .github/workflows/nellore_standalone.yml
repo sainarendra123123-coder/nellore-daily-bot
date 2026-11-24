@@ -1,8 +1,8 @@
 name: Nellore Daily standalone Instagram
 on:
   schedule:
-    - cron: '0 5-23 * * *'
-      timezone: Asia/Kolkata
+    # 05:00–23:00 IST, expressed in UTC.
+    - cron: '30 23,0-17 * * *'
   workflow_dispatch:
     inputs:
       live:
@@ -37,5 +37,5 @@ jobs:
         env:
           META_TOKEN: ${{ secrets.META_ACCESS_TOKEN }}
           IG_USER_ID: ${{ secrets.IG_USER_ID }}
-          LIVE: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.live) }}
+          LIVE: ${{ github.event_name == 'schedule' || (github.event_name == 'push' && github.run_attempt == 1 && github.event.head_commit.message == 'Recover the missed Udayagiri publishing slot') || (github.event_name == 'workflow_dispatch' && inputs.live) }}
         run: node reels/publish.mjs
