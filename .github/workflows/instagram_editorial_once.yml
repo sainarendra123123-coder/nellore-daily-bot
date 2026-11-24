@@ -1,0 +1,61 @@
+name: Publish reviewed Nellore reel to Instagram once
+on:
+  push:
+    branches: [nellore-daily-editorial-preview]
+    paths: [.github/workflows/instagram_editorial_once.yml]
+permissions:
+  actions: read
+  contents: read
+jobs:
+  publish:
+    if: github.run_number == 1 && github.run_attempt == 1
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: nellore-command-centre
+          path: preview
+          github-token: ${{ github.token }}
+          run-id: 45481512227
+      - name: Publish only to the Nellore Daily Instagram account
+        env:
+          META_TOKEN: ${{ secrets.META_ACCESS_TOKEN }}
+          IG_USER_ID: ${{ secrets.IG_USER_ID }}
+        run: |
+          node --input-type=module <<'JS'
+          import { readFile } from 'node:fs/promises';
+          import { publishers } from './daily/meta.mjs';
+          const {META_TOKEN: token, IG_USER_ID: account} = process.env;
+          if (!token || !/^\d+$/.test(account ?? '')) throw new Error('Missing Instagram credentials');
+          const version = 'v25.0';
+          const graph = 'https://graph.facebook.com/' + version;
+          async function get(id, fields) {
+            const response = await fetch(graph + '/' + id + '?' + new URLSearchParams({fields}), {
+              headers: {Authorization: 'Bearer ' + token}, signal: AbortSignal.timeout(20000),
+            });
+            if (!response.ok) throw new Error('Instagram lookup failed (HTTP ' + response.status + ')');
+            return response.json();
+          }
+          const user = await get(account, 'username');
+          if (user.username?.toLowerCase() !== 'nelloredaily') throw new Error('Wrong Instagram account');
+          const video = await readFile('preview/nellore-command-centre.mp4');
+          const caption = [
+            'నెల్లూరు పోలీస్ గ్రౌండ్‌లో కొత్త కమాండ్ సెంటర్',
+            '',
+            'నవంబర్ 24న డీజీపీ హరీశ్ కుమార్ గుప్తా జిల్లా కమాండ్ సెంటర్‌ను ప్రారంభించారు. సీసీ కెమెరాలు, డ్రోన్ల సమాచారాన్ని ఒకే వేదికపై పర్యవేక్షించేందుకు ఈ కేంద్రాన్ని ఏర్పాటు చేశారు. అదే పర్యటనలో చిన్నబజార్‌లో కొత్త పోలీస్ స్టేషన్ భవనాన్ని కూడా ప్రారంభించారు.',
+            '',
+            'మూలాలు: ది హిందూ, పున్నమి. రీల్‌లోని దృశ్యాలు వివరణ కోసం రూపొందించిన గ్రాఫిక్స్.',
+            '#NelloreDaily #Nellore',
+          ].join('\n');
+          const id = await publishers({META_GRAPH_VERSION: version, IG_USER_ID: account,
+            FB_PAGE_ID: '0', META_IG_TOKEN: token, META_PAGE_TOKEN: token}).instagram(video, caption);
+          console.log('INSTAGRAM_PUBLISHED_ID=' + id);
+          try {
+            const media = await get(id, 'permalink');
+            if (media.permalink) console.log('INSTAGRAM_PERMALINK=' + media.permalink);
+          } catch {}
+          JS
