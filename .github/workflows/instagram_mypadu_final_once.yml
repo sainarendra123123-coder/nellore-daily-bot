@@ -8,7 +8,7 @@ permissions:
   contents: read
 jobs:
   publish:
-    if: github.run_number == 1 && github.run_attempt == 1
+    if: github.run_number == 2 && github.run_attempt == 1
     runs-on: ubuntu-latest
     timeout-minutes: 8
     steps:
@@ -24,11 +24,10 @@ jobs:
       - name: Publish only to the Nellore Daily Instagram account
         env:
           META_TOKEN: ${{ secrets.META_ACCESS_TOKEN }}
+          REEL_URL: "https://d2ol7oe51mr4n9.cloudfront.net/user_2xfGgiDpCSF0170YwbIfoJS9dhR/c38e6137-6d95-4090-bf39-8157574dc40e.mp4"
           IG_USER_ID: ${{ secrets.IG_USER_ID }}
         run: |
           node --input-type=module <<'JS'
-          import { readFile } from 'node:fs/promises';
-          import { publishers } from './daily/meta.mjs';
           const {META_TOKEN: token, IG_USER_ID: account} = process.env;
           if (!token || !/^\d+$/.test(account ?? '')) throw new Error('Missing Instagram credentials');
           const version = 'v25.0';
@@ -42,7 +41,6 @@ jobs:
           }
           const user = await get(account, 'username');
           if (user.username?.toLowerCase() !== 'nelloredaily') throw new Error('Wrong Instagram account');
-          const video = await readFile('preview/reviewed-cut.mp4');
           const caption = [
             'మైపాడు బీచ్ 🌊 మన నెల్లూరు దగ్గర బంగాళాఖాతం తీరం',
             '',
@@ -51,8 +49,28 @@ jobs:
             'తాజా వార్తల కోసం నెల్లూరు డైలీని ఫాలో అవ్వండి.',
             '#NelloreDaily #MypaduBeach #Nellore',
           ].join('\n');
-          const id = await publishers({META_GRAPH_VERSION: version, IG_USER_ID: account,
-            FB_PAGE_ID: '0', META_IG_TOKEN: token, META_PAGE_TOKEN: token}).instagram(video, caption);
+          async function post(path, fields) {
+            const res = await fetch(graph + '/' + path, {
+              method: 'POST', headers: {Authorization: 'Bearer ' + token},
+              body: new URLSearchParams(fields), signal: AbortSignal.timeout(30000),
+            });
+            const value = await res.json();
+            if (!res.ok || value.error) throw new Error(path.split('/').at(-1) + ' rejected with HTTP ' + res.status + ', code ' + (value.error?.code ?? 'unknown') + ', subcode ' + (value.error?.error_subcode ?? 'none'));
+            return value;
+          }
+          const {id: container} = await post(account + '/media', {media_type:'REELS',video_url:process.env.REEL_URL,caption});
+          if (!container) throw new Error('Missing media container');
+          let ready = false;
+          for (let i=0;i<36;i++) {
+            const status=await get(container,'status_code,status');
+            console.log('Container state: ' + status.status_code);
+            if (status.status_code === 'FINISHED') { ready=true; break; }
+            if (status.status_code === 'ERROR' || status.status_code === 'EXPIRED') throw new Error('Instagram media processing failed: ' + status.status_code);
+            await new Promise(resolve => setTimeout(resolve,5000));
+          }
+          if (!ready) throw new Error('Instagram media processing timed out');
+          const {id} = await post(account+'/media_publish',{creation_id:container});
+          if (!id) throw new Error('Missing published media ID');
           console.log('INSTAGRAM_PUBLISHED_ID=' + id);
           try {
             const media = await get(id, 'permalink');
