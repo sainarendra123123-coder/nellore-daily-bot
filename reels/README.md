@@ -1,7 +1,22 @@
 # Nellore Daily standalone Instagram publishing
 
-GitHub Actions generates a 40-second Telugu reel from a fresh source and publishes it to @nelloredaily. The primary trigger is at 16 minutes past each hour in India, with retries at 31 and 46 minutes past. All three run around the clock. Once a run reaches the Instagram publish step, the workflow records the hour and the source in posted_history.json so a retry cannot publish a duplicate. Check the Actions log and Instagram before manually retrying an ambiguous publish response.
+The GitHub workflow runs hourly from 05:00–23:00 Asia/Kolkata and publishes at most one reviewed reel per run. Empty slots are skipped. GitHub may delay scheduled jobs. The workflow uses the repository's existing Meta access token and Instagram account ID secrets. Keep Meta access valid independently of ChatGPT.
 
-The workflow uses the repository's GEMINI_API_KEY, META_ACCESS_TOKEN and IG_USER_ID secrets, plus the optional PEXELS_API_KEY for stock footage. It uses Telugu narration, topic-matched stock clips or public-domain and CC0 Wikimedia photos, and captioned graphics when matching footage is unavailable. GitHub briefly hosts the MP4 as a release asset for Meta to ingest. Actions also retains a rendered reel artifact for five days. No ChatGPT subscription is required.
+Add an entry to queue.json on main only after reviewing the entire video, verifying its sources and date, confirming permission to publish, and checking that it has not already been posted. Use natural Telugu understood across Andhra Pradesh and Telangana, with simple familiar English where useful. Include Telugu narration, timed captions, relevant AI motion, an AI disclosure, and the channel follow line. Use an approved durable HTTPS MP4 host already allowlisted by publish.mjs. Do not use private links or put credentials in the queue.
 
-In GitHub Actions, select **Nellore Daily standalone Instagram** and **Run workflow**. A manual run generates and publishes for the current hour. Use **Disable workflow** from the workflow menu to stop future runs. Cancel an in-progress run separately if needed. Keep the older **Nellore Daily News Reel Bot** workflow disabled to avoid competing publications.
+```json
+{
+  "id": "unique-story-id",
+  "approved": true,
+  "videoUrl": "https://d2ol7oe51mr4n9.cloudfront.net/path/to/reviewed.mp4",
+  "caption": "తెలుగు శీర్షిక. దృశ్యాలు ఏఐతో రూపొందించినవి.",
+  "publishAfter": "2026-11-25T05:00:00+05:30",
+  "expiresAt": "2026-11-26T05:00:00+05:30"
+}
+```
+
+Set new publication and expiry times for each entry. Keep IDs unique and never reuse one for a new story. Run the workflow manually with live unchecked to validate the queue and verify the account. An entry marked pending-review in ledger.json needs manual reconciliation against Instagram before retrying. Maintain the ledger to preserve duplicate protection.
+
+To stop, go to GitHub Actions → Nellore Daily standalone Instagram → … → Disable workflow. Cancel any in-progress run separately if needed. To resume, enable that workflow. Neither operation requires ChatGPT.
+
+The workflow publishes completed media. Video generation and editorial review happen before queueing. The legacy workflow should stay disabled.
