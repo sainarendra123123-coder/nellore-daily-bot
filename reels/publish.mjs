@@ -28,11 +28,7 @@ if (process.argv.includes('--validate')) {
   console.log('Queue valid. Ready entries:', ready.length);
   process.exit(0);
 }
-const testIds = ['bakery-preorder-test-20261125', 'river-to-farm-explainer-20261125'];
-const testRun = process.env.GITHUB_EVENT_NAME === 'push' &&
-  process.env.GITHUB_RUN_ATTEMPT === '1' &&
-  JSON.parse(readFileSync(process.env.GITHUB_EVENT_PATH)).head_commit?.message === 'Run scheduled evening reel test queue once';
-const live = process.env.LIVE === 'true' || testRun;
+const live = process.env.LIVE === 'true';
 if (live && ready.length === 0) {
   console.log('No approved, unexpired reel is ready.');
   process.exit(0);
@@ -72,48 +68,31 @@ function save(item, state) {
     'commit', '-m', 'Record Instagram publication state [skip ci]');
   git('push', 'origin', 'HEAD:main');
 }
-async function publish(item) {
-  let pending = false;
-  const {id: container} = await request(account + '/media',
-    {media_type: 'REELS', video_url: item.videoUrl, caption: item.caption}, true);
-  if (!/^\d+$/.test(container ?? '')) throw Error('Missing Instagram media container');
-  for (let i = 0; i < 35; i++) {
-    const {status_code: status} = await request(container, {fields: 'status_code'});
-    if (status === 'FINISHED') {
-      if (Date.now() >= Date.parse(item.expiresAt)) throw Error('Reel expired during processing');
-      // Persist the intent before the irreversible call. Uncertain results are never retried blindly.
-      save(item, {status: 'pending-review', container, at: new Date().toISOString()});
-      pending = true;
-      break;
-    }
-    if (status === 'ERROR' || status === 'EXPIRED') throw Error('Instagram media processing failed: ' + status);
-    await pause(5000);
+const [item] = ready;
+let pending = false;
+const {id: container} = await request(account + '/media',
+  {media_type: 'REELS', video_url: item.videoUrl, caption: item.caption}, true);
+if (!/^\d+$/.test(container ?? '')) throw Error('Missing Instagram media container');
+for (let i = 0; i < 35; i++) {
+  const {status_code: status} = await request(container, {fields: 'status_code'});
+  if (status === 'FINISHED') {
+    if (Date.now() >= Date.parse(item.expiresAt)) throw Error('Reel expired during processing');
+    // Persist the intent before the irreversible call. Uncertain results are never retried blindly.
+    save(item, {status: 'pending-review', container, at: new Date().toISOString()});
+    pending = true;
+    break;
   }
-  if (!pending) throw Error('Media is not ready; the next run can try again');
-  const {id} = await request(account + '/media_publish', {creation_id: container}, true);
-  if (!/^\d+$/.test(id ?? '')) throw Error('Unconfirmed publication; inspect Instagram before retrying');
-  let permalink;
-  try {
-    ({permalink} = await request(id, {fields: 'permalink'}));
-  } catch {
-    console.warn('Instagram returned a media ID but the permalink lookup failed.');
-  }
-  save(item, {status: 'published', id, permalink, at: new Date().toISOString()});
-  console.log(permalink || 'Published Instagram media ' + id);
+  if (status === 'ERROR' || status === 'EXPIRED') throw Error('Instagram media processing failed: ' + status);
+  await pause(5000);
 }
-
-if (testRun) {
-  for (const [index, id] of testIds.entries()) {
-    const item = ready.find(row => row.id === id);
-    if (!item) continue;
-    if (index > 0) {
-      const previous = ledger[testIds[index - 1]];
-      if (previous?.status !== 'published') break;
-      const delay = Date.parse(previous.at) + 300000 - Date.now();
-      if (delay > 0) await pause(delay);
-    }
-    if (Date.now() < Date.parse(item.expiresAt)) await publish(item);
-  }
-} else {
-  await publish(ready[0]);
+if (!pending) throw Error('Media is not ready; the next run can try again');
+const {id} = await request(account + '/media_publish', {creation_id: container}, true);
+if (!/^\d+$/.test(id ?? '')) throw Error('Unconfirmed publication; inspect Instagram before retrying');
+let permalink;
+try {
+  ({permalink} = await request(id, {fields: 'permalink'}));
+} catch {
+  console.warn('Instagram returned a media ID but the permalink lookup failed.');
 }
+save(item, {status: 'published', id, permalink, at: new Date().toISOString()});
+console.log(permalink || 'Published Instagram media ' + id);
