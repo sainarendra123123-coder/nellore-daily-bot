@@ -13,6 +13,7 @@ from urllib.parse import urlparse
 PROVIDERS = (
     ("Lightricks LTX", "https://lightricks-ltx-video-distilled.hf.space", False),
     ("DeepRat LTX", "https://deeprat-ltx-video-zerogpu-optimized.hf.space", True),
+    ("OpenKing Wan", "https://openking-wan2-video-generation.hf.space", None),
 )
 SHOT_SECONDS = 8
 
@@ -35,7 +36,11 @@ def download_shot(provider, prompt, destination):
             832, 480, "text-to-video", SHOT_SECONDS, 9, 0, True, 1, True]
     if extra_argument:
         args.append(False)
-    endpoint = base + "/gradio_api/call/text_to_video"
+    method = "text_to_video"
+    if extra_argument is None:
+        method = "generate_video"
+        args = [prompt, None, 480, 832, 193, 20, 5, -1]
+    endpoint = base + "/gradio_api/call/" + method
     request = urllib.request.Request(endpoint, json.dumps({"data": args}).encode(),
                                      {"Content-Type": "application/json"})
     with opener.open(request, timeout=20) as response:
