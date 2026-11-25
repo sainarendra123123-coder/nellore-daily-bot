@@ -21,7 +21,7 @@ from google.genai import types
 # --- REQUIRED SECRETS ---
 GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
 META_ACCESS_TOKEN = os.environ["META_ACCESS_TOKEN"]
-FB_PAGE_ID = os.environ["FB_PAGE_ID"]
+FB_PAGE_ID = os.environ.get("FB_PAGE_ID", "")
 IG_USER_ID = os.environ["IG_USER_ID"]
 PREVIEW_ONLY = os.environ.get("PREVIEW_ONLY", "false").lower() == "true"
 
@@ -34,7 +34,8 @@ GOOGLE_CLOUD_PROJECT = os.environ.get("GOOGLE_CLOUD_PROJECT", "").strip()
 
 IST = timezone(timedelta(hours=5, minutes=30))
 HISTORY_FILE = "posted_history.json"
-NUM_SHOTS = 6
+HOURLY_INSTAGRAM = os.environ.get("HOURLY_INSTAGRAM") == "true"
+NUM_SHOTS = 8 if HOURLY_INSTAGRAM else 6
 
 BROWSER_HEADERS = {
     "User-Agent": (
@@ -108,11 +109,11 @@ def contains_politics(text):
 def is_recent_entry(entry, max_age_hours=24):
     parsed = entry.get("published_parsed") or entry.get("updated_parsed")
     if not parsed:
-        return True
+        return not HOURLY_INSTAGRAM
     try:
         return ((time.time() - time.mktime(parsed)) / 3600.0) <= max_age_hours
     except Exception:
-        return True
+        return not HOURLY_INSTAGRAM
 
 
 def fetch_latest_news(history):
@@ -167,19 +168,19 @@ STRICT RULES:
 3. HOOK TITLE ("hook_te"):
    - Super punchy 2-to-3 word Telugu emotional hook shown big in the upper third (like "అదిరిపోయే శుభవార్త!" or "ఒక ఎమోషన్!").
 4. NATURAL SPOKEN TELUGU VOICEOVER ("narration_te"):
-   - Write ONE smooth, engaging, conversational 50-to-60 word Telugu voiceover script (around 18-20 seconds spoken).
+   - Write ONE smooth, engaging, conversational 85-to-95 word conversational Telugu script with familiar basic English when natural. Tell a 40-second story with a hook, context, what happened, why it matters, and a question for followers. Use only facts supported by the selected item.
    - Use everyday spoken Nellore Telugu (e.g., "మన నెల్లూరు వాళ్లకి...", "మన ఆటో అన్నలకు...").
-5. EXACTLY 6 DIFFERENT VISUAL SHOTS ("shots" array of 6 objects):
+5. EXACTLY {NUM_SHOTS} DIFFERENT VISUAL SHOTS ("shots" array of {NUM_SHOTS} objects):
    - Each object MUST have:
      a) "ai_video_prompt": Vivid 9:16 cinematic motion prompt in South India / Andhra Pradesh (e.g., "Cinematic handheld shot tracking yellow auto rickshaws driving down a sunny tree-lined avenue in Nellore India, clear blue sky at top, golden sunlight, 9:16 vertical, no text").
-     b) "stock_query": A unique 2-to-3 word English stock video/photo query (e.g., "Indian auto rickshaw", "city traffic", "cricket stadium", "gold jewelry", "office interview", "students studying"). All 6 MUST be different!
+     b) "stock_query": A unique 2-to-3 word English stock video/photo query (e.g., "Indian auto rickshaw", "city traffic", "cricket stadium", "gold jewelry", "office interview", "students studying"). All {NUM_SHOTS} MUST be different!
 6. METADATA:
    - "category_badge": One of "NELLORE CITY", "JOBS ALERT", "CRICKET", "TOLLYWOOD", "TRENDING".
    - "caption": Detailed, helpful Instagram & Facebook caption in Telugu + English with emojis, bullet points, source credit, and hashtags.
    - "bgm_mood": One of "emotional", "breaking", "devotional", "general".
 
 Return strictly valid JSON with keys:
-"selected_link", "category_badge", "hook_te", "narration_te", "shots" (array of 6 objects with "ai_video_prompt", "stock_query"), "caption", "bgm_mood"
+"selected_link", "category_badge", "hook_te", "narration_te", "shots" (array of {NUM_SHOTS} objects with "ai_video_prompt", "stock_query"), "caption", "bgm_mood"
 """
 
     last_err = None
@@ -196,10 +197,10 @@ Return strictly valid JSON with keys:
                 )
                 data = json.loads(response.text)
                 if (
-                    data.get("selected_link")
+                    data.get("selected_link") in {article["link"] for article in articles}
                     and data.get("narration_te")
                     and isinstance(data.get("shots"), list)
-                    and len(data["shots"]) >= 4
+                    and len(data["shots"]) == NUM_SHOTS
                 ):
                     return data
             except Exception as e:
@@ -657,7 +658,7 @@ async def generate_voice_with_word_timings(narration_te, out_audio="voice.mp3"):
     full_script = re.sub(r"[•|★☆🔥⚠️✅📍📅⏰🎬🏏💼👇]", " ", full_script)
     full_script = re.sub(r"\s+", " ", full_script).strip()
 
-    communicate = edge_tts.Communicate(full_script, "te-IN-ShrutiNeural", rate="-2%")
+    communicate = edge_tts.Communicate(full_script, "te-IN-ShrutiNeural", rate="-2%", boundary="WordBoundary")
     word_events = []
     with open(out_audio, "wb") as audio_file:
         async for chunk in communicate.stream():
@@ -693,6 +694,19 @@ def build_fast_reel(total_dur, word_events, clip_paths, hook_te, bgm_path=None, 
     """Instant single-pass concat of 6 distinct clips + live karaoke captions (~15s total render)."""
     num_clips = len(clip_paths)
     shot_dur = total_dur / num_clips
+
+    if HOURLY_INSTAGRAM:
+        adjusted_clips = []
+        for index, clip in enumerate(clip_paths):
+            adjusted = f"scene_{index}.mp4"
+            subprocess.run([
+                "ffmpeg", "-loglevel", "error", "-y", "-i", clip,
+                "-vf", f"tpad=stop_mode=clone:stop_duration={shot_dur:.3f}",
+                "-t", f"{shot_dur:.3f}", "-an", "-c:v", "libx264",
+                "-preset", "ultrafast", "-pix_fmt", "yuv420p", adjusted,
+            ], check=True)
+            adjusted_clips.append(adjusted)
+        clip_paths = adjusted_clips
 
     with open("concat.txt", "w") as cf:
         for cpath in clip_paths:
@@ -773,6 +787,9 @@ def build_fast_reel(total_dur, word_events, clip_paths, hook_te, bgm_path=None, 
             "-c:a", "aac", "-ar", "44100", "-ac", "2", "-b:a", "192k",
             "-movflags", "+faststart", "-shortest", out_video,
         ]
+    if HOURLY_INSTAGRAM:
+        cmd_final[-2:] = ["-af", "apad", "-t", f"{total_dur:.2f}", out_video]
+        cmd_final[1:1] = ["-filter_complex_threads", "1"]
     subprocess.run(cmd_final, check=True)
 
 
@@ -861,10 +878,95 @@ def publish_to_facebook_page(video_path, caption):
     print("Facebook Page Video Published:", r)
 
 
+def gather_hourly_clips(shots):
+    clips = []
+    used_urls = set()
+    colors = ("14213d", "263251", "1b363e", "373059", "233857", "402d46", "223d3b", "2d3457")
+    for index, shot in enumerate(shots):
+        output = f"hourly_shot_{index}.mp4"
+        clip = try_pexels_video_clip(shot["stock_query"], output, used_urls)
+        if not clip:
+            subprocess.run([
+                "ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
+                f"color=c=0x{colors[index]}:s=1080x1920:r=30:d=5",
+                "-vf", "drawgrid=w=120:h=120:t=1:c=white@0.08,"
+                "drawbox=x=80:y=280:w=920:h=7:c=0xf2b447:t=fill",
+                "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", output,
+            ], check=True)
+            clip = output
+        clips.append(clip)
+    return clips
+
+
+def publish_hosted_reel(caption, history, source, slot):
+    graph = "https://graph.facebook.com/v25.0/"
+    headers = {"Authorization": f"Bearer {META_ACCESS_TOKEN}"}
+
+    def meta(path, fields, method="GET"):
+        response = requests.request(
+            method, graph + path, headers=headers,
+            params=fields if method == "GET" else None,
+            data=fields if method == "POST" else None,
+            timeout=30,
+        )
+        payload = response.json()
+        if not response.ok or "error" in payload:
+            raise RuntimeError(
+                f"Instagram {path.rsplit('/', 1)[-1]} failed: "
+                f"HTTP {response.status_code}, Meta code {payload.get('error', {}).get('code')}"
+            )
+        return payload
+
+    if not IG_USER_ID.isdigit() or meta(IG_USER_ID, {"fields": "username"}).get("username", "").lower() != "nelloredaily":
+        raise RuntimeError("Configured Instagram account must be @nelloredaily.")
+    tag = f"hourly-reel-{os.environ['GITHUB_RUN_ID']}-{os.environ['GITHUB_RUN_ATTEMPT']}"
+    subprocess.run([
+        "gh", "release", "create", tag, "reel.mp4", "--prerelease",
+        "--target", subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
+        "--title", "Nellore Daily reel upload",
+    ], check=True)
+    try:
+        url = f"https://github.com/{os.environ['GITHUB_REPOSITORY']}/releases/download/{tag}/reel.mp4"
+        container = meta(f"{IG_USER_ID}/media", {
+            "media_type": "REELS", "video_url": url, "caption": caption,
+        }, "POST")["id"]
+        for _ in range(35):
+            status = meta(container, {"fields": "status_code"}).get("status_code")
+            if status == "FINISHED":
+                break
+            if status in {"ERROR", "EXPIRED"}:
+                raise RuntimeError(f"Instagram video processing ended with {status}.")
+            time.sleep(5)
+        else:
+            raise RuntimeError("Instagram video processing timed out.")
+
+        # Record the slot and source before publishing so an ambiguous response cannot duplicate a post.
+        save_history([*history, source, slot])
+        subprocess.run(["git", "add", HISTORY_FILE], check=True)
+        subprocess.run([
+            "git", "-c", "user.name=Nellore Daily",
+            "-c", "user.email=41898282+github-actions[bot]@users.noreply.github.com",
+            "commit", "-m", "Record hourly Instagram publication attempt [skip ci]",
+        ], check=True)
+        subprocess.run(["git", "push", "origin", "HEAD:main"], check=True)
+
+        media_id = meta(f"{IG_USER_ID}/media_publish", {"creation_id": container}, "POST")["id"]
+        print(f"Published Instagram reel: {media_id}", flush=True)
+        print(meta(media_id, {"fields": "permalink"}).get("permalink", ""), flush=True)
+    finally:
+        subprocess.run(["gh", "release", "delete", tag, "--yes", "--cleanup-tag"], check=False)
+
+
 def main():
     history = load_history()
+    slot = datetime.now(IST).strftime("instagram-hour:%Y-%m-%dT%H")
+    if HOURLY_INSTAGRAM and not PREVIEW_ONLY and slot in history:
+        print(f"Instagram publication already attempted for {slot}.")
+        return
     articles = fetch_latest_news(history)
     if not articles:
+        if HOURLY_INSTAGRAM:
+            raise RuntimeError("No fresh, unused non-political articles found.")
         print("No fresh non-political articles found this hour. Exiting cleanly.")
         return
 
@@ -872,9 +974,24 @@ def main():
     print("Selected Hook:", story.get("hook_te"))
 
     cat_badge = story.get("category_badge", "NELLORE CITY")
-    clip_paths = gather_six_waterfall_clips(story["shots"], category=cat_badge)
+    clip_paths = (
+        gather_hourly_clips(story["shots"]) if HOURLY_INSTAGRAM
+        else gather_six_waterfall_clips(story["shots"], category=cat_badge)
+    )
     total_dur, word_events = asyncio.run(generate_voice_with_word_timings(story["narration_te"]))
-    bgm_file = pick_bgm(story.get("bgm_mood", "emotional"))
+    bgm_file = None if HOURLY_INSTAGRAM else pick_bgm(story.get("bgm_mood", "emotional"))
+    if HOURLY_INSTAGRAM:
+        scale = 38 / total_dur
+        if scale < 1:
+            subprocess.run([
+                "ffmpeg", "-loglevel", "error", "-y", "-i", "voice.mp3",
+                "-af", f"atempo={scale ** -1:.5f}", "voice-adjusted.mp3",
+            ], check=True)
+            os.replace("voice-adjusted.mp3", "voice.mp3")
+            for event in word_events:
+                event["start"] *= scale
+                event["end"] *= scale
+        total_dur = 40
 
     build_fast_reel(
         total_dur=total_dur,
@@ -886,6 +1003,14 @@ def main():
 
     if PREVIEW_ONLY:
         print("PREVIEW_ONLY=true — download reel.mp4 from Artifacts to inspect!")
+        return
+
+    if HOURLY_INSTAGRAM:
+        caption = story["caption"][:1750] + (
+            "\nదృశ్యాలు విషయాన్ని వివరించడానికి మాత్రమే. @nelloredaily ని ఫాలో అవ్వండి.\n"
+            + story["selected_link"]
+        )
+        publish_hosted_reel(caption[:2200], history, story["selected_link"], slot)
         return
 
     ig_ok, fb_ok = False, False
