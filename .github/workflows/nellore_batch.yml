@@ -1,0 +1,78 @@
+name: Nellore Daily four-reel batch
+on:
+  schedule:
+    - cron: '*/5 6-7 25 11 *'
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/nellore_batch.yml
+      - reels/generate_batch.py
+
+permissions:
+  contents: write
+
+concurrency:
+  group: nellore-standalone-instagram
+  cancel-in-progress: false
+
+jobs:
+  batch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 38
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Check one-time batch
+        id: gate
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" == schedule && "$(date -u +%F)" != 2026-11-25 ]]; then
+            echo run=false >> "$GITHUB_OUTPUT"
+          elif [[ "$GITHUB_EVENT_NAME" != push ]] && grep -Fq '"nellore-batch:2026-11-25:' posted_history.json; then
+            echo run=false >> "$GITHUB_OUTPUT"
+          else
+            echo run=true >> "$GITHUB_OUTPUT"
+          fi
+      - name: Install reel dependencies
+        if: steps.gate.outputs.run == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg fonts-noto-core fonts-dejavu-core
+          pip install -r requirements.txt
+      - name: Create four distinct Telugu reels
+        if: steps.gate.outputs.run == 'true'
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          META_ACCESS_TOKEN: ${{ secrets.META_ACCESS_TOKEN }}
+          IG_USER_ID: ${{ secrets.IG_USER_ID }}
+          PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
+          GH_TOKEN: ${{ github.token }}
+          HOURLY_INSTAGRAM: 'true'
+          PREVIEW_ONLY: ${{ github.event_name == 'push' }}
+        run: |
+          set -euo pipefail
+          mkdir -p batch-reels
+          if [[ "$PREVIEW_ONLY" == true ]]; then
+            export REEL_HISTORY_FILE="$RUNNER_TEMP/nellore-preview-history.json"
+            cp posted_history.json "$REEL_HISTORY_FILE"
+          fi
+          export REEL_PREVIOUS_POST="$RUNNER_TEMP/nellore-last-post"
+          for index in 1 2 3 4; do
+            export REEL_BATCH_INDEX="$index"
+            export REEL_SLOT="nellore-batch:2026-11-25:$index"
+            rm -rf ov_frames
+            python reels/generate_batch.py
+            mv reel.mp4 "batch-reels/reel-$index.mp4"
+          done
+      - name: Save rendered reels
+        if: ${{ !cancelled() && hashFiles('batch-reels/*.mp4') != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: nellore-four-reel-batch-${{ github.run_id }}
+          path: batch-reels/*.mp4
+          retention-days: 5
