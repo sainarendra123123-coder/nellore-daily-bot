@@ -2,9 +2,10 @@ name: Nellore Daily standalone Instagram
 
 on:
   schedule:
-    # India time :07, with a same-hour retry at :22.
-    - cron: '37 * * * *'
-    - cron: '52 * * * *'
+    # India time :16, with retries at :31 and :46.
+    - cron: '46 * * * *'
+    - cron: '1 * * * *'
+    - cron: '16 * * * *'
   workflow_dispatch:
 
 permissions:
