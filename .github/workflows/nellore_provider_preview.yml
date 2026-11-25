@@ -1,0 +1,98 @@
+name: Nellore reel provider preview
+on:
+  pull_request:
+    paths:
+      - reels/render_preview.py
+      - .github/workflows/nellore_provider_preview.yml
+  workflow_dispatch:
+    inputs:
+      plan:
+        description: Path to a reviewed reel plan in this branch
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  preview:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install render dependencies
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y ffmpeg fonts-noto-core
+      - name: Test provider fallback
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          from tempfile import TemporaryDirectory
+          from reels.render_preview import choose_shot
+
+          calls = []
+          def generate(provider, prompt, destination):
+              calls.append(provider[0])
+              if provider[0] == "one":
+                  raise TimeoutError
+              destination.write_text("usable")
+
+          with TemporaryDirectory() as root:
+              path = Path(root) / "clip"
+              assert choose_shot("scene", path, [("one",), ("two",)],
+                                 generate, lambda path: None) == "two"
+              assert calls == ["one", "two"]
+              try:
+                  choose_shot("scene", path, [("one",)], generate, lambda path: None)
+              except RuntimeError:
+                  assert not path.exists()
+              else:
+                  raise AssertionError("Provider failure must stop the render")
+          PY
+          python3 - <<'PY'
+          from pathlib import Path
+          from tempfile import TemporaryDirectory
+          from unittest.mock import patch
+          from reels.render_preview import generated_shot
+
+          with TemporaryDirectory() as root:
+              cache = Path(root)
+              dest = cache / "scratch.mp4"
+              def generate(prompt, destination):
+                  destination.write_bytes(b"validated fixture")
+                  return "fixture"
+
+              with patch("reels.render_preview.choose_shot", side_effect=generate) as provider, patch("reels.render_preview.validate_motion") as validate:
+                  generated_shot(cache, 0, "original", dest)
+                  dest.unlink()
+                  generated_shot(cache, 0, "original", dest)
+                  assert dest.read_bytes() == b"validated fixture"
+                  provider.assert_called_once()
+                  validate.assert_called_once_with(dest)
+                  generated_shot(cache, 0, "changed", dest)
+                  assert provider.call_count == 2
+          PY
+      - uses: actions/cache/restore@v4
+        if: github.event_name == 'workflow_dispatch'
+        with:
+          path: .reel-shots
+          key: reel-shots-${{ hashFiles(inputs.plan) }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: reel-shots-${{ hashFiles(inputs.plan) }}-
+      - name: Render preview
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          PLAN: ${{ inputs.plan }}
+        run: python3 reels/render_preview.py "$PLAN" preview.mp4
+      - uses: actions/cache/save@v4
+        if: always() && github.event_name == 'workflow_dispatch' && hashFiles('.reel-shots/**/*.mp4') != ''
+        with:
+          path: .reel-shots
+          key: reel-shots-${{ hashFiles(inputs.plan) }}-${{ github.run_id }}-${{ github.run_attempt }}
+      - uses: actions/upload-artifact@v4
+        if: github.event_name == 'workflow_dispatch'
+        with:
+          name: nellore-reel-preview
+          path: preview.mp4
+          if-no-files-found: error
