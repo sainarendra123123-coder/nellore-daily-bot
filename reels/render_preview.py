@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import re
@@ -63,7 +64,10 @@ def download_shot(provider, prompt, destination):
     clip = output[0] if isinstance(output, list) and output else None
     if not isinstance(clip, dict):
         raise ValueError("Provider returned no clip")
-    url = (clip.get("video") or clip).get("url", "")
+    media = clip.get("video") or clip
+    if not isinstance(media, dict) or not isinstance(media.get("url"), str):
+        raise ValueError("Provider returned an invalid clip reference")
+    url = media["url"]
     parsed = urlparse(url)
     if parsed.scheme != "https" or parsed.netloc != urlparse(base).netloc:
         raise ValueError("Unexpected clip origin")
@@ -125,7 +129,6 @@ def render(plan_path, output):
                 validate_motion(raw)
             else:
                 print(f"Scene {index + 1}: {choose_shot(scene['prompt'], raw)}")
-            import hashlib
             digest = hashlib.sha256(raw.read_bytes()).hexdigest()
             if digest in sources:
                 raise ValueError("Duplicate clip in this reel")
