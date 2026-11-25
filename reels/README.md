@@ -1,6 +1,6 @@
 # Nellore Daily standalone Instagram publishing
 
-GitHub Actions generates a 40-second Telugu reel from a fresh source and publishes it to @nelloredaily. The primary trigger is at seven minutes past each hour in India, and the second is at 22 minutes past. Both run around the clock. Once a run reaches the Instagram publish step, the workflow records the hour and the source in posted_history.json so a retry cannot publish a duplicate. Check the Actions log and Instagram before manually retrying an ambiguous publish response.
+GitHub Actions generates a 40-second Telugu reel from a fresh source and publishes it to @nelloredaily. The primary trigger is at 16 minutes past each hour in India, with retries at 31 and 46 minutes past. All three run around the clock. Once a run reaches the Instagram publish step, the workflow records the hour and the source in posted_history.json so a retry cannot publish a duplicate. Check the Actions log and Instagram before manually retrying an ambiguous publish response.
 
 The workflow uses the repository's GEMINI_API_KEY, META_ACCESS_TOKEN and IG_USER_ID secrets, plus the optional PEXELS_API_KEY for stock footage. It uses Telugu narration, topic-matched stock clips or public-domain and CC0 Wikimedia photos, and captioned graphics when matching footage is unavailable. GitHub briefly hosts the MP4 as a release asset for Meta to ingest. Actions also retains a rendered reel artifact for five days. No ChatGPT subscription is required.
 
