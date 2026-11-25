@@ -3,6 +3,9 @@ on:
   schedule:
     - cron: '0 5-23 * * *'
       timezone: Asia/Kolkata
+    # Extra test slots on November 25, 2026. The date check prevents annual repeats.
+    - cron: '5-55/5 5-22 25 11 *'
+      timezone: Asia/Kolkata
   workflow_dispatch:
     inputs:
       live:
@@ -27,13 +30,24 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 8
     steps:
+      - name: Check temporary test date
+        id: test_window
+        env:
+          TEMPORARY_SLOT: ${{ github.event_name == 'schedule' && github.event.schedule == '5-55/5 5-22 25 11 *' }}
+        run: |
+          if [[ "$TEMPORARY_SLOT" == true && "$(TZ=Asia/Kolkata date +%F)" != 2026-11-25 ]]; then
+            echo 'active=false' >> "$GITHUB_OUTPUT"
+          fi
       - uses: actions/checkout@v4
+        if: steps.test_window.outputs.active != 'false'
         with:
           ref: main
       - uses: actions/setup-node@v4
+        if: steps.test_window.outputs.active != 'false'
         with:
           node-version: '24'
       - name: Verify or publish one reviewed reel
+        if: steps.test_window.outputs.active != 'false'
         env:
           META_TOKEN: ${{ secrets.META_ACCESS_TOKEN }}
           IG_USER_ID: ${{ secrets.IG_USER_ID }}
