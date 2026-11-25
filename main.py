@@ -6,6 +6,7 @@ import time
 import html
 import urllib.parse
 import asyncio
+import calendar
 import random
 import subprocess
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -111,7 +112,8 @@ def is_recent_entry(entry, max_age_hours=24):
     if not parsed:
         return not HOURLY_INSTAGRAM
     try:
-        return ((time.time() - time.mktime(parsed)) / 3600.0) <= max_age_hours
+        age_hours = (time.time() - calendar.timegm(parsed)) / 3600.0
+        return 0 <= age_hours <= max_age_hours
     except Exception:
         return not HOURLY_INSTAGRAM
 
@@ -878,13 +880,63 @@ def publish_to_facebook_page(video_path, caption):
     print("Facebook Page Video Published:", r)
 
 
+def commons_photo_candidates(query):
+    try:
+        response = requests.get(
+            "https://commons.wikimedia.org/w/api.php",
+            params={
+                "action": "query", "format": "json", "generator": "search",
+                "gsrsearch": f"filetype:bitmap {query}", "gsrnamespace": 6, "gsrlimit": 6,
+                "prop": "imageinfo", "iiprop": "url|extmetadata", "iiurlwidth": 1280,
+            },
+            headers={"User-Agent": "NelloreDailyBot/16.0 (https://instagram.com/nelloredaily)"},
+            timeout=5,
+        )
+        response.raise_for_status()
+        pages = response.json().get("query", {}).get("pages", {})
+    except (requests.RequestException, ValueError):
+        return []
+
+    candidates = []
+    for page in sorted(pages.values(), key=lambda item: item.get("index", 999)):
+        for image in page.get("imageinfo", []):
+            license_name = image.get("extmetadata", {}).get("LicenseShortName", {}).get("value")
+            url = image.get("thumburl", "")
+            parsed = urllib.parse.urlsplit(url)
+            if (
+                license_name in {"Public domain", "CC0"}
+                and parsed.scheme == "https"
+                and parsed.netloc == "upload.wikimedia.org"
+                and parsed.path.lower().endswith((".jpg", ".jpeg", ".png"))
+            ):
+                candidates.append(url)
+    return candidates
+
+
 def gather_hourly_clips(shots):
     clips = []
     used_urls = set()
     colors = ("14213d", "263251", "1b363e", "373059", "233857", "402d46", "223d3b", "2d3457")
-    for index, shot in enumerate(shots):
+    queries = [shot["stock_query"] for shot in shots]
+    with ThreadPoolExecutor(max_workers=4) as workers:
+        photos_by_shot = list(workers.map(commons_photo_candidates, queries))
+
+    for index, (query, photos) in enumerate(zip(queries, photos_by_shot)):
         output = f"hourly_shot_{index}.mp4"
-        clip = try_pexels_video_clip(shot["stock_query"], output, used_urls)
+        clip = try_pexels_video_clip(query, output, used_urls)
+        if not clip:
+            for url in photos[:2]:
+                if url in used_urls:
+                    continue
+                clip = _download_and_norm_photo((
+                    index, url,
+                    "scale=1220:2168:force_original_aspect_ratio=increase,"
+                    "crop=1080:1920:'min(140,n*1.5)':'min(248,n*2.5)',format=yuv420p",
+                ))
+                if clip:
+                    used_urls.add(url)
+                    print(f"Using public-domain or CC0 photo for {query}.")
+                    break
         if not clip:
             subprocess.run([
                 "ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
