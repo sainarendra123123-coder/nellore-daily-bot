@@ -28,12 +28,7 @@ if (process.argv.includes('--validate')) {
   console.log('Queue valid. Ready entries:', ready.length);
   process.exit(0);
 }
-const oneTimeReel = 'handmade-first-order-telugu-english-20261125';
-const immediatePublish = process.env.GITHUB_EVENT_NAME === 'push' &&
-  process.env.GITHUB_RUN_ATTEMPT === '1' &&
-  JSON.parse(readFileSync(process.env.GITHUB_EVENT_PATH)).head_commit?.message === 'Publish approved Telugu English reel once' &&
-  ready[0]?.id === oneTimeReel;
-const live = process.env.LIVE === 'true' || immediatePublish;
+const live = process.env.LIVE === 'true';
 if (live && ready.length === 0) {
   console.log('No approved, unexpired reel is ready.');
   process.exit(0);
