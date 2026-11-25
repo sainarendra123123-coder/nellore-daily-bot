@@ -111,6 +111,24 @@ def choose_shot(prompt, destination, providers=PROVIDERS, generate=download_shot
     raise RuntimeError("All enabled providers failed to return usable motion")
 
 
+def generated_shot(cache, index, prompt, destination):
+    key = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+    cached = cache / f"{index}-{key}.mp4"
+    if cached.is_file():
+        try:
+            shutil.copyfile(cached, destination)
+            validate_motion(destination)
+        except (OSError, ValueError, KeyError, TypeError, IndexError,
+                subprocess.SubprocessError):
+            destination.unlink(missing_ok=True)
+        else:
+            print(f"Scene {index + 1}: resumed validated shot")
+            return
+    print(f"Scene {index + 1}: {choose_shot(prompt, destination)}")
+    os.replace(destination, cached)
+    shutil.copyfile(cached, destination)
+
+
 def render(plan_path, output):
     plan = json.loads(plan_path.read_text(encoding="utf-8"))
     scenes = plan["scenes"]
@@ -119,6 +137,8 @@ def render(plan_path, output):
     base = plan_path.parent
     output = output.resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
+    cache = output.parent / ".reel-shots" / hashlib.sha256(plan_path.read_bytes()).hexdigest()
+    cache.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(dir=output.parent) as directory:
         work = Path(directory)
         sources = []
@@ -128,7 +148,7 @@ def render(plan_path, output):
                 shutil.copyfile(base / scene["clip"], raw)
                 validate_motion(raw)
             else:
-                print(f"Scene {index + 1}: {choose_shot(scene['prompt'], raw)}")
+                generated_shot(cache, index, scene['prompt'], raw)
             digest = hashlib.sha256(raw.read_bytes()).hexdigest()
             if digest in sources:
                 raise ValueError("Duplicate clip in this reel")
